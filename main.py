@@ -696,8 +696,8 @@ async def on_ready():
     Thread(target=run_flask_app, daemon=True).start()
 
 if __name__ == "__main__":
-    bot_token = os.getenv("DISCORD_TOKEN")
-    if not bot_token:
+    discord_token = os.getenv("DISCORD_TOKEN")
+    if not discord_token:
         print("Error: DISCORD_TOKEN environment variable not set.")
     else:
         bot.run(discord_token)
