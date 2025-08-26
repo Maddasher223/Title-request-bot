@@ -236,7 +236,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             if details:
                 status += "\n" + " | ".join(details)
 
-            embed..add_field(name=f"👑 {title_name}", value=status, inline=False)
+            embed.add_field(name=f"👑 {title_name}", value=status, inline=False)
 
         await ctx.send(embed=embed)
 
