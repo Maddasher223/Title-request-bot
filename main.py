@@ -28,7 +28,7 @@ intents.members = True
 intents.message_content = True
 intents.reactions = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix=commands.when_mentioned_or('!'), intents=intents)
 
 # --- Helper Functions ---
 
@@ -652,7 +652,9 @@ def home():
     return "I'm alive!"
 
 def run():
-  app.run(host='0.0.0.0',port=8080)
+    import os
+    port = int(os.environ.get("PORT", "8080"))
+    app.run(host="0.0.0.0", port=port)
 
 def keep_alive():
     t = Thread(target=run)
