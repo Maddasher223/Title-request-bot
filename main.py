@@ -52,6 +52,8 @@ def load_state():
 
 def save_state(state):
     """Safely saves state to STATE_FILE via a temporary file."""
+    # Note: Render has an ephemeral filesystem. For true persistence, a database would be needed.
+    # This implementation will lose state on service restarts.
     temp_file = f"{STATE_FILE}.tmp"
     with open(temp_file, 'w') as f:
         json.dump(state, f, indent=4)
@@ -644,17 +646,98 @@ async def on_ready():
         save_state(current_state)
         log_event(None, 'config_change', notes="Initial seeding of default titles.")
 
-# --- Web Server Setup ---
+# --- Web Server & Live Dashboard ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "I'm alive!"
+    """Generates the HTML for the live dashboard."""
+    if not bot.is_ready():
+        return "<h1>Bot is still starting up, please refresh in a moment.</h1>", 503
+
+    # Safely get the cog and state
+    cog = bot.get_cog('TitleRequest')
+    if not cog:
+        return "<h1>Bot cog not loaded.</h1>", 500
+    
+    state = cog.state
+    
+    # Start building the HTML page
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>TitleRequest Bot Dashboard</title>
+        <meta http-equiv="refresh" content="60">
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 2em; }
+            .container { max-width: 1200px; margin: auto; }
+            h1 { color: #ffffff; border-bottom: 2px solid #333; padding-bottom: 10px; }
+            .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+            .card { background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+            .card h2 { margin-top: 0; color: #bb86fc; }
+            .card p { margin: 5px 0; }
+            .card .label { font-weight: bold; color: #a0a0a0; }
+            .card .status-held { color: #03dac6; }
+            .card .status-available { color: #4caf50; }
+            .card .status-due { color: #cf6679; font-weight: bold; }
+            ol { padding-left: 20px; }
+            li { margin-bottom: 5px; }
+            footer { text-align: center; margin-top: 30px; color: #777; font-size: 0.9em; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>TitleRequest Bot Status</h1>
+            <p><i>Last updated: """ + datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC') + """ (Page auto-refreshes every 60 seconds)</i></p>
+            <div class="grid">
+    """
+
+    # Generate a card for each title
+    guild = bot.guilds[0] if bot.guilds else None # Assume the bot is in one server
+
+    for title_name, data in sorted(state['titles'].items()):
+        html += '<div class="card">'
+        html += f'<h2>{title_name}</h2>'
+
+        # Holder Info
+        if data['holder_id']:
+            holder = guild.get_member(data['holder_id']) if guild else None
+            holder_name = holder.display_name if holder else f"User ID: {data['holder_id']}"
+            claimed_at = datetime.fromisoformat(data['claimed_at'])
+            held_for = format_timedelta(datetime.now(timezone.utc) - claimed_at)
+            
+            status_class = "status-due" if data.get('change_due') else "status-held"
+            html += f'<p><span class="label">Holder:</span> <span class="{status_class}">{holder_name}</span></p>'
+            html += f'<p><span class="label">Held For:</span> {held_for}</p>'
+        else:
+            html += '<p><span class="label">Holder:</span> <span class="status-available">Available</span></p>'
+
+        # Queue Info
+        html += '<p><span class="label">Queue:</span></p>'
+        if data['queue']:
+            html += '<ol>'
+            for i, user_id in enumerate(data['queue']):
+                user = guild.get_member(user_id) if guild else None
+                user_name = user.display_name if user else f"User ID: {user_id}"
+                html += f'<li>{user_name}</li>'
+            html += '</ol>'
+        else:
+            html += '<p>The queue is empty.</p>'
+
+        html += '</div>' # End Card
+
+    html += """
+            </div> <!-- End Grid -->
+            <footer>Powered by TitleRequest Bot</footer>
+        </div>
+    </body>
+    </html>
+    """
+    return html
 
 def run():
-    import os
-    port = int(os.environ.get("PORT", "8080"))
-    app.run(host="0.0.0.0", port=port)
+  app.run(host='0.0.0.0',port=8080)
 
 def keep_alive():
     t = Thread(target=run)
