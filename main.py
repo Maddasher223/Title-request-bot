@@ -741,9 +741,6 @@ app = Flask(__name__)
 
 def get_bot_state():
     """Safely gets a copy of the bot's state for Flask."""
-    # This is a simplified approach. For high-concurrency, a more robust
-    # IPC mechanism like Redis or a dedicated API might be better.
-    # For this project, we assume the global state is sufficient.
     return state
 
 def get_guild_and_members():
@@ -758,12 +755,18 @@ def get_guild_and_members():
 def dashboard():
     """Renders the main dashboard."""
     bot_state = get_bot_state()
-    guild, members = get_guild_and_members()
     
     titles_data = []
     for name, data in sorted(bot_state.get('titles', {}).items()):
-        holder_name = members.get(str(data['holder'])) if data['holder'] else "None"
-        pending_name = members.get(str(data['pending_claimant'])) if data.get('pending_claimant') else "None"
+        holder_info = "None"
+        if data.get('holder'):
+            holder = data['holder']
+            holder_info = f"{holder['name']} ({holder['coords']})"
+
+        pending_info = "None"
+        if data.get('pending_claimant'):
+            pending = data['pending_claimant']
+            pending_info = f"{pending['name']} ({pending['coords']})"
         
         remaining = "N/A"
         if data.get('expiry_date'):
@@ -774,14 +777,14 @@ def dashboard():
             else:
                 remaining = "Expired"
 
-        queue_names = [members.get(str(uid), f"ID: {uid}") for uid in data.get('queue', [])]
+        queue_info = [f"{q['name']} ({q['coords']})" for q in data.get('queue', [])]
         
         titles_data.append({
             'name': name,
-            'holder': holder_name,
-            'pending': pending_name,
+            'holder': holder_info,
+            'pending': pending_info,
             'expires_in': remaining,
-            'queue': queue_names,
+            'queue': queue_info,
             'icon': data.get('icon'),
             'buffs': data.get('buffs')
         })
@@ -794,15 +797,11 @@ def scheduler():
     bot_state = get_bot_state()
     guild, members = get_guild_and_members()
     
-    # Generate calendar data for the next 7 days
     today = datetime.utcnow().date()
     days = [(today + timedelta(days=i)) for i in range(7)]
     hours = [f"{h:02d}:00" for h in range(24)]
     
-    # Get all title names
     title_names = sorted(bot_state.get('titles', {}).keys())
-
-    # Get existing schedules
     schedules = bot_state.get('schedules', {})
     
     return render_template('scheduler.html', days=days, hours=hours, titles=title_names, schedules=schedules, members=members)
@@ -811,24 +810,20 @@ def scheduler():
 def request_title():
     """Handles the web form for requesting a title."""
     title_name = request.form.get('title_name')
-    user_id_str = request.form.get('user_id')
+    ign = request.form.get('ign')
+    coords = request.form.get('coords')
     
-    if not title_name or not user_id_str:
+    if not all([title_name, ign, coords]):
         return "Missing form data.", 400
 
-    try:
-        user_id = int(user_id_str)
-    except ValueError:
-        return "Invalid User ID.", 400
-
-    # This is a simplified simulation. A real implementation would need
-    # to find the user in the guild and trigger the !claim command logic.
-    # For now, we'll just log it.
-    logger.info(f"Web request received for title '{title_name}' by user ID '{user_id}'.")
-    log_action('web_claim_request', user_id, {'title': title_name, 'source': 'web_form'})
+    # In a real app, you'd get the discord ID from an OAuth session
+    # For now, we'll log it as a system action (user_id=0)
+    logger.info(f"Web request received for title '{title_name}' by player '{ign}'.")
+    log_action('web_claim_request', 0, {'title': title_name, 'ign': ign, 'coords': coords, 'source': 'web_form'})
     
-    # A more advanced version would use bot.loop.call_soon_threadsafe
-    # to interact with the bot's async logic.
+    # This part is complex to do safely across threads. A simple log is safer.
+    # A full implementation would use bot.loop.call_soon_threadsafe to trigger
+    # the actual claim logic, but that requires careful state management.
     
     return redirect(url_for('dashboard'))
 
@@ -838,29 +833,26 @@ def book_slot():
     title_name = request.form.get('title')
     date_str = request.form.get('date')
     time_str = request.form.get('time')
-    user_id_str = request.form.get('user_id') # This needs to be securely obtained in a real app
+    ign = request.form.get('ign')
+    coords = request.form.get('coords')
 
-    if not all([title_name, date_str, time_str, user_id_str]):
+    if not all([title_name, date_str, time_str, ign, coords]):
         return "Missing data for booking.", 400
         
-    # This is a simplified example. A real app needs authentication to get the user ID.
-    # We'll assume it's passed for this demonstration.
     try:
-        user_id = int(user_id_str)
         schedule_time = datetime.fromisoformat(f"{date_str}T{time_str}")
     except (ValueError, TypeError):
         return "Invalid data format.", 400
 
-    # This function would need to be thread-safe to modify the bot's state.
-    # We use call_soon_threadsafe to schedule the async function from this thread.
     async def do_booking():
         async with state_lock:
             title_schedules = state['schedules'].setdefault(title_name, {})
             schedule_key = schedule_time.isoformat()
             if schedule_key not in title_schedules:
-                title_schedules[schedule_key] = user_id
-                log_action('schedule_book_web', user_id, {'title': title_name, 'time': schedule_key})
-                await save_state() # save_state is async
+                # Storing IGN instead of discord user ID
+                title_schedules[schedule_key] = ign 
+                log_action('schedule_book_web', 0, {'title': title_name, 'time': schedule_key, 'ign': ign})
+                await save_state()
     
     bot.loop.call_soon_threadsafe(asyncio.create_task, do_booking())
     
@@ -871,7 +863,6 @@ def run_flask_app():
     serve(app, host='0.0.0.0', port=8080)
 
 # --- Create Flask Templates (in-memory) ---
-# In a real project, these would be in a 'templates' folder.
 if not os.path.exists('templates'):
     os.makedirs('templates')
 
@@ -895,8 +886,9 @@ dashboard_template = """
         .queue { list-style: none; padding-left: 0; }
         .queue li { background-color: #40444b; padding: 5px 10px; border-radius: 4px; margin-top: 5px; }
         .form-card { background-color: #2f3136; padding: 20px; border-radius: 8px; margin-top: 2em; }
-        input, select, button { width: 100%; padding: 10px; margin-top: 10px; border-radius: 4px; border: 1px solid #202225; background-color: #40444b; color: #dcddde; }
+        input, select, button { width: 100%; padding: 10px; margin-top: 10px; border-radius: 4px; border: 1px solid #202225; background-color: #40444b; color: #dcddde; box-sizing: border-box; }
         button { background-color: #7289da; cursor: pointer; font-weight: bold; }
+        label { display: block; margin-top: 1em; }
     </style>
 </head>
 <body>
@@ -934,13 +926,14 @@ dashboard_template = """
         <div class="form-card">
             <h2>Request a Title</h2>
             <form action="/request-title" method="POST">
-                <p>Note: This is a simplified form for demonstration. In a real app, you would be authenticated via Discord OAuth2.</p>
                 <label for="title_name">Title Name:</label>
                 <select id="title_name" name="title_name" required>
                     {% for title in titles %}<option value="{{ title.name }}">{{ title.name }}</option>{% endfor %}
                 </select>
-                <label for="user_id">Your Discord User ID:</label>
-                <input type="text" id="user_id" name="user_id" placeholder="Enter your Discord User ID" required>
+                <label for="ign">In-Game Name:</label>
+                <input type="text" id="ign" name="ign" placeholder="Enter your In-Game Name" required>
+                <label for="coords">X:Y Coordinates:</label>
+                <input type="text" id="coords" name="coords" placeholder="e.g., 123:456" required>
                 <button type="submit">Submit Request</button>
             </form>
         </div>
@@ -968,10 +961,10 @@ scheduler_template = """
         th { background-color: #2f3136; }
         .time-header { min-width: 80px; }
         .booked { background-color: #f04747; color: white; font-size: 0.8em; }
-        .available { background-color: #43b581; cursor: pointer; }
         .form-card { background-color: #2f3136; padding: 20px; border-radius: 8px; margin-top: 2em; }
-        input, select, button { width: 100%; padding: 10px; margin-top: 10px; border-radius: 4px; border: 1px solid #202225; background-color: #40444b; color: #dcddde; }
+        input, select, button { width: 100%; padding: 10px; margin-top: 10px; border-radius: 4px; border: 1px solid #202225; background-color: #40444b; color: #dcddde; box-sizing: border-box; }
         button { background-color: #7289da; cursor: pointer; font-weight: bold; }
+        label { display: block; margin-top: 1em; }
     </style>
 </head>
 <body>
@@ -982,7 +975,6 @@ scheduler_template = """
         <div class="form-card">
             <h2>Book a Slot</h2>
             <form action="/book-slot" method="POST">
-                <p>Note: This is a simplified form. In a real app, you would be authenticated.</p>
                 <label for="title">Title:</label>
                 <select id="title" name="title" required>
                     {% for title in titles %}<option value="{{ title }}">{{ title }}</option>{% endfor %}
@@ -993,8 +985,10 @@ scheduler_template = """
                 <select id="time" name="time" required>
                     {% for hour in hours %}<option value="{{ hour }}">{{ hour }}</option>{% endfor %}
                 </select>
-                <label for="user_id">Your Discord User ID:</label>
-                <input type="text" id="user_id" name="user_id" placeholder="Enter your Discord User ID" required>
+                <label for="ign_book">In-Game Name:</label>
+                <input type="text" id="ign_book" name="ign" placeholder="Enter your In-Game Name" required>
+                <label for="coords_book">X:Y Coordinates:</label>
+                <input type="text" id="coords_book" name="coords" placeholder="e.g., 123:456" required>
                 <button type="submit">Book Slot</button>
             </form>
         </div>
@@ -1021,7 +1015,7 @@ scheduler_template = """
                                 {% if schedule_data[slot_time] %}
                                     <div class="booked">
                                         <strong>{{ title_name }}</strong><br>
-                                        {{ members.get(schedule_data[slot_time]|string, 'Unknown') }}
+                                        {{ schedule_data[slot_time] }}
                                     </div>
                                 {% endif %}
                             {% endfor %}
@@ -1041,10 +1035,9 @@ with open('templates/scheduler.html', 'w') as f:
 
 # --- Final Bot Execution ---
 if __name__ == "__main__":
-    # It's recommended to load the token from an environment variable for security
-    bot_token = os.getenv("DISCORD_TOKEN")
+    bot_token = os.getenv("DISCORD_BOT_TOKEN")
     if not bot_token:
-        print("Error: DISCORD_TOKEN environment variable not set.")
+        print("Error: DISCORD_BOT_TOKEN environment variable not set.")
     else:
         bot.run(bot_token)
 
@@ -1059,9 +1052,9 @@ if __name__ == "__main__":
 # 1.  **Set Environment Variable:** Before running, you must set an environment
 #     variable to hold your Discord bot token.
 #
-#     -   On Linux/macOS: `export DISCORD_TOKEN="YOUR_TOKEN_HERE"`
-#     -   On Windows (Command Prompt): `set DISCORD_TOKEN="YOUR_TOKEN_HERE"`
-#     -   On Windows (PowerShell): `$env:DISCORD_TOKEN="YOUR_TOKEN_HERE"`
+#     -   On Linux/macOS: `export DISCORD_BOT_TOKEN="YOUR_TOKEN_HERE"`
+#     -   On Windows (Command Prompt): `set DISCORD_BOT_TOKEN="YOUR_TOKEN_HERE"`
+#     -   On Windows (PowerShell): `$env:DISCORD_BOT_TOKEN="YOUR_TOKEN_HERE"`
 #
 # 2.  **Run the Python script:**
 #
@@ -1080,5 +1073,3 @@ if __name__ == "__main__":
 # -   `log.json`: This file contains a persistent history of all major actions
 #     performed by the bot and its users, such as claiming, releasing, and
 #     assigning titles.
-
-# main.py - Part 3/3
