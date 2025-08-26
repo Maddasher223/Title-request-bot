@@ -765,6 +765,8 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         await ctx.send(f"Successfully booked '{title_name}' for {date_str} at {time_str} UTC.")
 # main.py - Part 3/3
 
+from waitress import serve
+
 # --- Bot Startup and Web Server ---
 
 @bot.event
@@ -774,10 +776,10 @@ async def on_ready():
     await bot.add_cog(TitleCog(bot))
     logger.info(f'{bot.user.name} has connected to Discord!')
     logger.info(f'State loaded. Found {len(state.get("titles", {}))} titles.')
-    # Start the Flask server in a separate thread
+    # Start the Flask server in a separate thread using a production-grade server
     flask_thread = Thread(target=run_flask_app, daemon=True)
     flask_thread.start()
-    logger.info("Flask web server started.")
+    logger.info("Flask web server started with waitress.")
 
 # --- Flask Web Server ---
 app = Flask(__name__)
@@ -910,9 +912,8 @@ def book_slot():
     return redirect(url_for('scheduler'))
 
 def run_flask_app():
-    """Runs the Flask app."""
-    # Note: In a production environment, use a proper WSGI server like Gunicorn.
-    app.run(host='0.0.0.0', port=8080)
+    """Runs the Flask app using a production-grade WSGI server."""
+    serve(app, host='0.0.0.0', port=8080)
 
 # --- Create Flask Templates (in-memory) ---
 # In a real project, these would be in a 'templates' folder.
@@ -1096,7 +1097,7 @@ if __name__ == "__main__":
 #
 # ## Pip Install Commands
 #
-# pip install discord.py flask
+# pip install discord.py flask waitress
 #
 # ## How to Run the Bot
 #
@@ -1124,3 +1125,5 @@ if __name__ == "__main__":
 # -   `log.json`: This file contains a persistent history of all major actions
 #     performed by the bot and its users, such as claiming, releasing, and
 #     assigning titles.
+
+# main.py - Part 3/3
