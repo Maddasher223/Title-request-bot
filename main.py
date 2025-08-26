@@ -8,7 +8,7 @@ import json
 import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
-from flask import Flask
+from flask import Flask, request, jsonify
 from threading import Thread
 import typing # Used for type hinting
 import dateutil.parser
@@ -155,18 +155,11 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                 next_slot = title_data['schedule'][0]
                 start_time = datetime.fromisoformat(next_slot['start_time'])
                 if now >= start_time:
-                    # A scheduled slot is starting now
                     scheduled_user_id = next_slot['user_id']
-                    
-                    # Remove from schedule
                     title_data['schedule'].pop(0)
-
-                    # Insert at the front of the queue
                     if scheduled_user_id in title_data['queue']:
                         title_data['queue'].remove(scheduled_user_id)
                     title_data['queue'].insert(0, scheduled_user_id)
-
-                    # Trigger change due, even if there was a holder
                     title_data['change_due'] = True
                     title_data['reminders_sent'] = 0
                     title_data['last_notified_at'] = now.isoformat()
@@ -174,7 +167,6 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                     log_event(title_name, 'schedule_start', new_holder_id=scheduled_user_id, notes="Scheduled slot started.")
                     save_state(self.state)
                     
-                    # Announce it
                     holder_id = title_data.get('holder_id')
                     holder = channel.guild.get_member(holder_id) if holder_id else None
                     next_in_queue = channel.guild.get_member(scheduled_user_id)
@@ -191,7 +183,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                             f"Assign to: {next_in_queue.mention}.\n"
                             "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
                         )
-                    continue # Move to next title
+                    continue
 
             # --- Check 2: Standard Queue Rotation ---
             if not title_data.get('change_due') and title_data['holder_id'] and title_data['queue']:
@@ -201,12 +193,10 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                 snoozed_until = datetime.fromisoformat(snoozed_until_str) if snoozed_until_str else None
 
                 if now >= claimed_at + min_hold and (not snoozed_until or now >= snoozed_until):
-                    # --- New Logic: Find next eligible user ---
                     eligible_user_found = False
                     while title_data['queue'] and not eligible_user_found:
                         next_user_id = title_data['queue'][0]
                         
-                        # Check if this user already holds another title
                         is_holding_another = False
                         for t_name, t_data in self.state['titles'].items():
                             if t_data['holder_id'] == next_user_id:
@@ -214,14 +204,13 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                                 break
                         
                         if is_holding_another:
-                            # Skip this user
                             title_data['queue'].pop(0)
                             skipped_user = self.bot.get_user(next_user_id)
                             if skipped_user:
                                 try:
                                     await skipped_user.send(f"Your turn for the **{title_name}** title was skipped because you currently hold another title.")
                                 except discord.Forbidden:
-                                    pass # Can't DM user
+                                    pass
                             log_event(title_name, 'queue_skip', new_holder_id=next_user_id, notes="User holds another title.")
                         else:
                             eligible_user_found = True
@@ -302,9 +291,8 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         if ctx.author.id in title_data['queue']:
             return await ctx.send(f"You are already in the queue for the **{title_name}** title.")
 
-        # If title is unheld, add user to queue and trigger guardian flow
         if not title_data['holder_id']:
-            title_data['queue'].insert(0, ctx.author.id) # Add to front of queue
+            title_data['queue'].insert(0, ctx.author.id)
             title_data['change_due'] = True
             title_data['reminders_sent'] = 0
             title_data['last_notified_at'] = datetime.now(timezone.utc).isoformat()
@@ -321,8 +309,6 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                     "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
                 )
             await ctx.send(f"👍 You have claimed the unheld **{title_name}** title. Guardians have been notified to assign it to you.")
-
-        # If title is held, add to back of queue
         else:
             title_data['queue'].append(ctx.author.id)
             position = len(title_data['queue'])
