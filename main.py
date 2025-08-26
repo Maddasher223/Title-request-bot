@@ -1,977 +1,1126 @@
-# main.py
-# TitleRequest Discord Bot with Flask Web Server for Render hosting
+# main.py - Part 1/3
 
 import discord
 from discord.ext import commands, tasks
-import os
 import json
-import asyncio
-from datetime import datetime, timedelta, timezone
+import os
 import logging
-from flask import Flask, request, jsonify
+from datetime import datetime, timedelta, time
+import asyncio
 from threading import Thread
-import typing # Used for type hinting
-import dateutil.parser
+from flask import Flask, render_template, request, redirect, url_for, jsonify
+import calendar
 
-# --- Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
-
-# --- Constants & Configuration ---
-STATE_FILE = 'titles_state.json'
-LOG_FILE = 'log.json'
-DEFAULT_TITLES = ['Governor', 'Architect', 'Prefect', 'General']
-MAX_LOG_ENTRIES = 2000 # Max global history entries to keep
-
-# --- Bot Intents ---
+# --- Initial Setup ---
 intents = discord.Intents.default()
-intents.guilds = True
 intents.members = True
 intents.message_content = True
-intents.reactions = True
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-bot = commands.Bot(command_prefix=commands.when_mentioned_or('!'), intents=intents)
+# --- State and Logging Configuration ---
+STATE_FILE = 'titles_state.json'
+LOG_FILE = 'log.json'
+state = {}
+state_lock = asyncio.Lock()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
+logger = logging.getLogger(__name__)
 
 # --- Helper Functions ---
+async def load_state():
+    """Loads the bot's state from a JSON file."""
+    global state
+    async with state_lock:
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE, 'r') as f:
+                    state = json.load(f)
+                    # Convert string keys back to int for reminders
+                    if 'config' in state and 'reminders' in state['config']:
+                        state['config']['reminders'] = {int(k): v for k, v in state['config']['reminders'].items()}
+            except (json.JSONDecodeError, IOError) as e:
+                logger.error(f"Error loading state file: {e}")
+                initialize_state()
+        else:
+            initialize_state()
 
-def load_state():
-    """Loads state from STATE_FILE. Returns default if file not found."""
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r') as f:
-            return json.load(f)
-    else:
-        # Default state structure
-        return {
-            "titles": {},
-            "config": {
-                "min_hold_minutes": 60,
-                "announce_channel_id": None,
-                "guardians": [],
-                "guardian_titles": [],
-                "remind_every_minutes": 15,
-                "max_reminders": 3
+def initialize_state():
+    """Initializes a default state structure."""
+    global state
+    state = {
+        'titles': {},
+        'users': {},
+        'config': {
+            'min_hold_duration_hours': 24,
+            'announcement_channel': None,
+            'guardian_roles': [],
+            'guardian_titles': {}, # Maps guardian role ID to list of title names they manage
+            'reminders': { # Default reminders in hours before expiry
+                24: "24 hours remaining on your title.",
+                1: "1 hour remaining on your title."
             }
-        }
+        },
+        'schedules': {} # For !schedule command
+    }
 
-def save_state(state):
-    """Safely saves state to STATE_FILE via a temporary file."""
-    temp_file = f"{STATE_FILE}.tmp"
-    with open(temp_file, 'w') as f:
-        json.dump(state, f, indent=4)
-    os.replace(temp_file, STATE_FILE)
+async def save_state():
+    """Saves the bot's state to a JSON file."""
+    async with state_lock:
+        try:
+            # Convert int keys back to string for JSON compatibility
+            temp_state = state.copy()
+            if 'config' in temp_state and 'reminders' in temp_state['config']:
+                 temp_state['config']['reminders'] = {str(k): v for k, v in temp_state['config']['reminders'].items()}
 
-def log_event(title_name, action, previous_holder_id=None, new_holder_id=None, queue_snapshot=None, notes=None):
-    """Appends an event to the LOG_FILE and handles log rotation."""
-    if not os.path.exists(LOG_FILE):
-        with open(LOG_FILE, 'w') as f:
-            json.dump([], f)
+            with open(STATE_FILE, 'w') as f:
+                json.dump(temp_state, f, indent=4)
+        except IOError as e:
+            logger.error(f"Error saving state file: {e}")
 
-    with open(LOG_FILE, 'r+') as f:
-        log_data = json.load(f)
-        
-        event = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "title": title_name,
-            "action": action,
-            "previous_holder_id": previous_holder_id,
-            "new_holder_id": new_holder_id,
-            "queue_snapshot": queue_snapshot or [],
-            "notes": notes
-        }
-        log_data.append(event)
-        
-        if len(log_data) > MAX_LOG_ENTRIES:
-            log_data = log_data[-MAX_LOG_ENTRIES:]
-            
-        f.seek(0)
-        json.dump(log_data, f, indent=4)
-        f.truncate()
+def log_action(action, user_id, details):
+    """Logs an action to the log file."""
+    log_entry = {
+        'timestamp': datetime.utcnow().isoformat(),
+        'action': action,
+        'user_id': user_id,
+        'details': details
+    }
+    try:
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'r+') as f:
+                try:
+                    logs = json.load(f)
+                except json.JSONDecodeError:
+                    logs = []
+                logs.append(log_entry)
+                f.seek(0)
+                json.dump(logs, f, indent=4)
+        else:
+            with open(LOG_FILE, 'w') as f:
+                json.dump([log_entry], f, indent=4)
+    except IOError as e:
+        logger.error(f"Error writing to log file: {e}")
 
-def format_timedelta(td: timedelta):
-    """Formats a timedelta into a human-readable string like '1h 23m' or '45m'."""
-    if not td:
-        return "0m"
-    total_seconds = int(td.total_seconds())
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, _ = divmod(remainder, 60)
-    if hours > 0:
-        return f"{hours}h {minutes}m"
-    return f"{minutes}m"
+def is_guardian_or_admin(ctx):
+    """Check if the user is a Guardian or an Admin."""
+    if ctx.author.guild_permissions.administrator:
+        return True
+    guardian_role_ids = state.get('config', {}).get('guardian_roles', [])
+    user_role_ids = {role.id for role in ctx.author.roles}
+    return any(role_id in user_role_ids for role_id in guardian_role_ids)
 
-# --- Bot Cog ---
+def is_title_guardian(user, title_name):
+    """Check if a user is a designated guardian for a specific title."""
+    if user.guild_permissions.administrator:
+        return True
+    guardian_titles = state.get('config', {}).get('guardian_titles', {})
+    for role in user.roles:
+        if str(role.id) in guardian_titles and title_name in guardian_titles[str(role.id)]:
+            return True
+    return False
 
+# --- Main Bot Cog ---
 class TitleCog(commands.Cog, name="TitleRequest"):
     def __init__(self, bot):
         self.bot = bot
-        self.state = load_state()
-        self.check_due_changes.start()
+        self.title_check_loop.start()
 
     def cog_unload(self):
-        self.check_due_changes.cancel()
+        self.title_check_loop.cancel()
 
-    async def cog_command_error(self, ctx, error):
-        """Global command error handler."""
-        if isinstance(error, commands.CommandNotFound):
-            return
-        elif isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send(f"❌ Missing argument. Usage: `{ctx.prefix}{ctx.command.signature}`")
-        elif isinstance(error, commands.CheckFailure):
-            await ctx.send("🚫 You don't have permission to use this command.")
-        elif isinstance(error, commands.BadArgument):
-            await ctx.send(f"⚠️ Invalid argument provided. Please check the command usage.")
-        else:
-            logging.error(f"An unhandled error occurred in command '{ctx.command}': {error}")
-            await ctx.send("An unexpected error occurred. Please contact an administrator.")
-
-    # --- Checks ---
-    async def is_guardian_or_admin(self, ctx):
-        """Check if the user is a guardian or has admin-level permissions."""
-        if ctx.author.guild_permissions.manage_roles:
-            return True
-        guardian_ids = self.state['config'].get('guardians', [])
-        if ctx.author.id in guardian_ids:
-            return True
-        if any(role.id in guardian_ids for role in ctx.author.roles):
-            return True
-        return False
-        
-    # --- Background Task ---
-    @tasks.loop(seconds=60)
-    async def check_due_changes(self):
+    @tasks.loop(minutes=1)
+    async def title_check_loop(self):
+        """Periodically checks for expired titles and sends reminders."""
         await self.bot.wait_until_ready()
-        announce_channel_id = self.state['config']['announce_channel_id']
-        if not announce_channel_id:
-            return
-
-        channel = self.bot.get_channel(announce_channel_id)
-        if not channel:
-            logging.warning(f"Announce channel with ID {announce_channel_id} not found.")
-            return
-
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         
-        for title_name, title_data in self.state['titles'].items():
-            # --- Check 1: Scheduled Events ---
-            if title_data.get('schedule') and title_data['schedule']:
-                next_slot = title_data['schedule'][0]
-                start_time = datetime.fromisoformat(next_slot['start_time'])
-                if now >= start_time:
-                    scheduled_user_id = next_slot['user_id']
-                    title_data['schedule'].pop(0)
-                    if scheduled_user_id in title_data['queue']:
-                        title_data['queue'].remove(scheduled_user_id)
-                    title_data['queue'].insert(0, scheduled_user_id)
-                    title_data['change_due'] = True
-                    title_data['reminders_sent'] = 0
-                    title_data['last_notified_at'] = now.isoformat()
-                    
-                    log_event(title_name, 'schedule_start', new_holder_id=scheduled_user_id, notes="Scheduled slot started.")
-                    save_state(self.state)
-                    
-                    holder_id = title_data.get('holder_id')
-                    holder = channel.guild.get_member(holder_id) if holder_id else None
-                    next_in_queue = channel.guild.get_member(scheduled_user_id)
-                    
-                    if holder:
-                        await channel.send(
-                            f"**Scheduled Title Change: {title_name}**\n"
-                            f"Current: {holder.mention}'s time is up. → Next (Scheduled): {next_in_queue.mention}.\n"
-                            "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
-                        )
-                    else:
-                         await channel.send(
-                            f"**Scheduled Title Assignment: {title_name}**\n"
-                            f"Assign to: {next_in_queue.mention}.\n"
-                            "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
-                        )
-                    continue
+        # Check for expired titles
+        titles_to_release = []
+        for title_name, data in state.get('titles', {}).items():
+            if data['holder'] and data.get('expiry_date'):
+                expiry = datetime.fromisoformat(data['expiry_date'])
+                if now >= expiry:
+                    titles_to_release.append((title_name, data['holder']))
+        
+        for title_name, user_id in titles_to_release:
+            guild = self.bot.guilds[0] # Assuming the bot is in one server
+            member = guild.get_member(user_id)
+            user_display = member.display_name if member else f"User ID {user_id}"
+            logger.info(f"Title '{title_name}' expired for {user_display}. Forcing release.")
+            await self.force_release_logic(title_name, self.bot.user.id, "Title expired.")
 
-            # --- Check 2: Standard Queue Rotation ---
-            if not title_data.get('change_due') and title_data['holder_id'] and title_data['queue']:
-                claimed_at = datetime.fromisoformat(title_data['claimed_at'])
-                min_hold = timedelta(minutes=self.state['config']['min_hold_minutes'])
-                snoozed_until_str = title_data.get('snoozed_until')
-                snoozed_until = datetime.fromisoformat(snoozed_until_str) if snoozed_until_str else None
-
-                if now >= claimed_at + min_hold and (not snoozed_until or now >= snoozed_until):
-                    eligible_user_found = False
-                    while title_data['queue'] and not eligible_user_found:
-                        next_user_id = title_data['queue'][0]
-                        
-                        is_holding_another = False
-                        for t_name, t_data in self.state['titles'].items():
-                            if t_data['holder_id'] == next_user_id:
-                                is_holding_another = True
-                                break
-                        
-                        if is_holding_another:
-                            title_data['queue'].pop(0)
-                            skipped_user = self.bot.get_user(next_user_id)
-                            if skipped_user:
-                                try:
-                                    await skipped_user.send(f"Your turn for the **{title_name}** title was skipped because you currently hold another title.")
-                                except discord.Forbidden:
-                                    pass
-                            log_event(title_name, 'queue_skip', new_holder_id=next_user_id, notes="User holds another title.")
-                        else:
-                            eligible_user_found = True
-
-                    if eligible_user_found:
-                        title_data['change_due'] = True
-                        title_data['reminders_sent'] = 0
-                        title_data['last_notified_at'] = now.isoformat()
-                        save_state(self.state)
-
-                        holder = channel.guild.get_member(title_data['holder_id'])
-                        next_in_queue = channel.guild.get_member(title_data['queue'][0])
-                        await channel.send(
-                            f"**Title Change Due: {title_name}**\n"
-                            f"Current: {holder.mention if holder else 'Unknown User'} → Next: {next_in_queue.mention if next_in_queue else 'Unknown User'}.\n"
-                            "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
-                        )
-                        log_event(title_name, 'due', title_data['holder_id'], title_data['queue'][0], title_data['queue'])
-            
-            # --- Check 3: Reminders ---
-            if title_data.get('change_due'):
-                last_notified_at = datetime.fromisoformat(title_data.get('last_notified_at', now.isoformat()))
-                remind_interval = timedelta(minutes=self.state['config']['remind_every_minutes'])
-                max_reminders = self.state['config']['max_reminders']
+        # Check for reminders
+        for title_name, data in state.get('titles', {}).items():
+            if data['holder'] and data.get('expiry_date'):
+                expiry = datetime.fromisoformat(data['expiry_date'])
+                user_id = data['holder']
+                reminders_sent = state['users'].setdefault(str(user_id), {}).setdefault('reminders_sent', {})
                 
-                if now >= last_notified_at + remind_interval and title_data.get('reminders_sent', 0) < max_reminders:
-                    title_data['reminders_sent'] += 1
-                    title_data['last_notified_at'] = now.isoformat()
-                    save_state(self.state)
+                for hours, message in state.get('config', {}).get('reminders', {}).items():
+                    reminder_time = expiry - timedelta(hours=hours)
+                    # Check if it's time to send and if this specific reminder for this title hasn't been sent
+                    if now >= reminder_time and reminders_sent.get(title_name) != hours:
+                        try:
+                            user = await self.bot.fetch_user(user_id)
+                            await user.send(f"**Title Reminder:** {message} (Title: {title_name})")
+                            reminders_sent[title_name] = hours
+                            logger.info(f"Sent {hours}-hour reminder for '{title_name}' to User ID {user_id}.")
+                        except discord.Forbidden:
+                            logger.warning(f"Cannot send reminder DM to User ID {user_id}.")
+                        except discord.NotFound:
+                            logger.warning(f"User ID {user_id} not found for reminder.")
 
-                    holder = channel.guild.get_member(title_data.get('holder_id'))
-                    next_in_queue = channel.guild.get_member(title_data['queue'][0])
-                    
-                    message = ""
-                    if holder:
-                        message = (f"**REMINDER: Title Change Pending for {title_name}**\n"
-                                   f"Current: {holder.mention} is still awaiting replacement by {next_in_queue.mention}.\n")
-                    else:
-                        message = (f"**REMINDER: Title Assignment Pending for {title_name}**\n"
-                                   f"Waiting for {next_in_queue.mention} to be assigned the title.\n")
-
-                    await channel.send(message + "Guardians, please use `!assign " f"{title_name}` after updating in-game.")
-                    log_event(title_name, 'remind', title_data.get('holder_id'), title_data['queue'][0], title_data['queue'])
-
-    # --- Helper to manage roles ---
-    async def _update_discord_roles(self, guild, old_holder_id, new_holder_id, title_name):
-        role = discord.utils.get(guild.roles, name=title_name)
-        if not role:
-            logging.warning(f"Role '{title_name}' not found for role management.")
-            return
-
-        try:
-            if old_holder_id:
-                old_holder = guild.get_member(old_holder_id)
-                if old_holder and role in old_holder.roles:
-                    await old_holder.remove_roles(role, reason="Title released/transferred")
-            
-            if new_holder_id:
-                new_holder = guild.get_member(new_holder_id)
-                if new_holder and role not in new_holder.roles:
-                    await new_holder.add_roles(role, reason="Title claimed")
-        except discord.Forbidden:
-            logging.error(f"Bot lacks permissions to manage the '{title_name}' role. Ensure it's higher in the role hierarchy.")
-        except discord.HTTPException as e:
-            logging.error(f"Failed to update roles for '{title_name}': {e}")
-
+        await save_state()
 
     # --- Member Commands ---
 
-    @commands.command(name='claim', help='Claim a title or join its queue.')
+    @commands.command(help="Claim a title or see its queue. Usage: !claim <Title Name>")
     async def claim(self, ctx, *, title_name: str):
-        title_name = title_name.title()
-        if title_name not in self.state['titles']:
-            return await ctx.send(f"❌ Title '{title_name}' does not exist.")
+        title_name = title_name.strip()
+        user_id = str(ctx.author.id)
+
+        if title_name not in state['titles']:
+            await ctx.send(f"Title '{title_name}' does not exist.")
+            return
+
+        # Check if user already holds a title
+        if any(t['holder'] == ctx.author.id for t in state['titles'].values()):
+            await ctx.send("You already hold a title. Please release it before claiming another.")
+            return
+
+        title = state['titles'][title_name]
         
-        title_data = self.state['titles'][title_name]
-
-        if ctx.author.id in title_data['queue']:
-            return await ctx.send(f"You are already in the queue for the **{title_name}** title.")
-
-        if not title_data['holder_id']:
-            title_data['queue'].insert(0, ctx.author.id)
-            title_data['change_due'] = True
-            title_data['reminders_sent'] = 0
-            title_data['last_notified_at'] = datetime.now(timezone.utc).isoformat()
+        if not title['holder']:
+            # Title is free, but requires guardian approval
+            title['pending_claimant'] = ctx.author.id
+            await save_state()
+            log_action('claim_request', ctx.author.id, {'title': title_name})
             
-            log_event(title_name, 'queued', new_holder_id=ctx.author.id, queue_snapshot=title_data['queue'], notes="Claimed unheld title, pending assignment.")
-            save_state(self.state)
+            # Notify guardians
+            guardian_message = (f"👑 **Title Request:** {ctx.author.mention} has requested to claim the title **'{title_name}'**. "
+                                f"A designated guardian must approve this by using `!assign {title_name} @{ctx.author.display_name}`.")
+            
+            await self.notify_guardians(ctx.guild, title_name, guardian_message)
+            await ctx.send(f"Your request for '{title_name}' has been submitted. A guardian must approve it.")
 
-            announce_channel = self.bot.get_channel(self.state['config']['announce_channel_id'])
-            if announce_channel:
-                next_in_queue = ctx.guild.get_member(ctx.author.id)
-                await announce_channel.send(
-                    f"**Title Assignment Due: {title_name}**\n"
-                    f"Assign to: {next_in_queue.mention if next_in_queue else 'Unknown User'}.\n"
-                    "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
-                )
-            await ctx.send(f"👍 You have claimed the unheld **{title_name}** title. Guardians have been notified to assign it to you.")
         else:
-            title_data['queue'].append(ctx.author.id)
-            position = len(title_data['queue'])
-            log_event(title_name, 'queued', previous_holder_id=title_data['holder_id'], new_holder_id=ctx.author.id, queue_snapshot=title_data['queue'])
-            save_state(self.state)
-            
-            claimed_at = datetime.fromisoformat(title_data['claimed_at'])
-            min_hold = timedelta(minutes=self.state['config']['min_hold_minutes'])
-            eta = claimed_at + min_hold
-            time_left = eta - datetime.now(timezone.utc)
+            # Title is held, join the queue
+            if ctx.author.id in title['queue']:
+                await ctx.send(f"You are already in the queue for '{title_name}'.")
+            else:
+                title['queue'].append(ctx.author.id)
+                await save_state()
+                log_action('queue_join', ctx.author.id, {'title': title_name})
+                await ctx.send(f"You have been added to the queue for '{title_name}'. Position: {len(title['queue'])}")
 
-            eta_msg = f"eligible for rotation after {format_timedelta(time_left)}." if time_left.total_seconds() > 0 else "eligible for rotation now."
-            
-            await ctx.send(f"👍 You have been added to the queue for **{title_name}** at position **#{position}**. The title is {eta_msg}")
+    @commands.command(help="Release a title you currently hold. Usage: !release <Title Name>")
+    async def release(self, ctx, *, title_name: str):
+        title_name = title_name.strip()
+        user_id = ctx.author.id
 
-    @commands.command(name='release', help='Release the title you currently hold.')
-    async def release(self, ctx):
-        held_title_name = None
-        for t_name, t_data in self.state['titles'].items():
-            if t_data['holder_id'] == ctx.author.id:
-                held_title_name = t_name
+        if title_name not in state['titles']:
+            await ctx.send(f"Title '{title_name}' does not exist.")
+            return
+
+        title = state['titles'][title_name]
+
+        if title['holder'] != user_id:
+            await ctx.send("You do not hold this title.")
+            return
+
+        await self.release_logic(ctx, title_name, user_id, "User released.")
+        await ctx.send(f"You have released the title '{title_name}'.")
+
+    @commands.command(help="Join the queue for a held title. Usage: !queue <Title Name>")
+    async def queue(self, ctx, *, title_name: str):
+        """Alias for !claim when title is held."""
+        await self.claim(ctx, title_name=title_name)
+
+    @commands.command(help="List all available titles and their status.")
+    async def titles(self, ctx):
+        if not state['titles']:
+            await ctx.send("No titles have been configured.")
+            return
+
+        embed = discord.Embed(title="📜 Title Status", color=discord.Color.blue())
+        
+        sorted_titles = sorted(state['titles'].items())
+
+        for title_name, data in sorted_titles:
+            status = ""
+            if data['holder']:
+                holder = ctx.guild.get_member(data['holder'])
+                holder_name = holder.display_name if holder else f"Unknown User (ID: {data['holder']})"
+                expiry = datetime.fromisoformat(data['expiry_date'])
+                remaining = expiry - datetime.utcnow()
+                status = f"**Held by:** {holder_name}\n*Expires in: {str(timedelta(seconds=int(remaining.total_seconds())))}*"
+                if data['queue']:
+                    status += f"\n*Queue: {len(data['queue'])}*"
+            elif data.get('pending_claimant'):
+                claimant = ctx.guild.get_member(data['pending_claimant'])
+                claimant_name = claimant.display_name if claimant else "Unknown User"
+                status = f"**Pending Approval for:** {claimant_name}"
+            else:
+                status = "**Status:** Available"
+            
+            details = []
+            if data.get('icon'): details.append(f"Icon: {data['icon']}")
+            if data.get('buffs'): details.append(f"Buffs: {data['buffs']}")
+            if details:
+                status += "\n" + " | ".join(details)
+
+            embed.add_field(name=f"👑 {title_name}", value=status, inline=False)
+
+        await ctx.send(embed=embed)
+
+    @commands.command(help="Show the title you currently hold.")
+    async def mytitle(self, ctx):
+        user_id = ctx.author.id
+        held_title = None
+        for title_name, data in state['titles'].items():
+            if data['holder'] == user_id:
+                held_title = (title_name, data)
                 break
         
-        if not held_title_name:
-            return await ctx.send("You do not currently hold any title.")
+        if not held_title:
+            await ctx.send("You do not currently hold any titles.")
+            return
 
-        title_data = self.state['titles'][held_title_name]
-        old_holder_id = title_data['holder_id']
-        await self._update_discord_roles(ctx.guild, old_holder_id, None, held_title_name)
+        title_name, data = held_title
+        expiry = datetime.fromisoformat(data['expiry_date'])
+        remaining = expiry - datetime.utcnow()
         
-        if not title_data['queue']:
-            title_data['holder_id'] = None
-            title_data['claimed_at'] = None
-            log_event(held_title_name, 'release', previous_holder_id=old_holder_id, queue_snapshot=title_data['queue'])
-            await ctx.send(f"✅ You have released the **{held_title_name}** title. It is now available.")
-        else:
-            title_data['change_due'] = True
-            title_data['reminders_sent'] = 0
-            title_data['last_notified_at'] = datetime.now(timezone.utc).isoformat()
-            
-            log_event(held_title_name, 'release', previous_holder_id=old_holder_id, new_holder_id=title_data['queue'][0], queue_snapshot=title_data['queue'], notes="Triggered guardian flow.")
-            
-            announce_channel = self.bot.get_channel(self.state['config']['announce_channel_id'])
-            if announce_channel:
-                holder = ctx.guild.get_member(old_holder_id)
-                next_in_queue = ctx.guild.get_member(title_data['queue'][0])
-                await announce_channel.send(
-                    f"**Title Change Due: {held_title_name}** (Holder Released)\n"
-                    f"Current: {holder.mention if holder else 'Unknown User'} → Next: {next_in_queue.mention if next_in_queue else 'Unknown User'}.\n"
-                    "Guardians, please make the change in-game and confirm with `!assign " f"{held_title_name}`."
-                )
-            await ctx.send(f"✅ You have released **{held_title_name}**. Guardians have been notified to assign it to the next person in the queue.")
-
-        save_state(self.state)
-
-    @commands.command(name='queue', help='Show the queue for a specific title.')
-    async def queue(self, ctx, *, title_name: str):
-        title_name = title_name.title()
-        if title_name not in self.state['titles']:
-            return await ctx.send(f"❌ Title '{title_name}' does not exist.")
-
-        data = self.state['titles'][title_name]
-        embed = discord.Embed(title=f"Status for {title_name}", color=discord.Color.blue())
-
-        if data['holder_id']:
-            holder = ctx.guild.get_member(data['holder_id'])
-            claimed_at = datetime.fromisoformat(data['claimed_at'])
-            held_for = format_timedelta(datetime.now(timezone.utc) - claimed_at)
-            embed.add_field(name="Current Holder", value=f"{holder.mention if holder else 'Unknown User'} (held for {held_for})", inline=False)
-        else:
-            embed.add_field(name="Current Holder", value="None (Available)", inline=False)
-            
-        if data.get('snoozed_until'):
-            snoozed_until = datetime.fromisoformat(data['snoozed_until'])
-            if snoozed_until > datetime.now(timezone.utc):
-                time_left = format_timedelta(snoozed_until - datetime.now(timezone.utc))
-                embed.set_footer(text=f"Snoozed for another {time_left}.")
-
-        if data['queue']:
-            queue_text = []
-            for i, user_id in enumerate(data['queue']):
-                user = ctx.guild.get_member(user_id)
-                queue_text.append(f"{i+1}. {user.mention if user else f'Unknown User (ID: {user_id})'}")
-            embed.add_field(name="Queue", value="\n".join(queue_text), inline=False)
-        else:
-            embed.add_field(name="Queue", value="Empty", inline=False)
+        embed = discord.Embed(title=f"Your Title: {title_name}", color=discord.Color.green())
+        embed.add_field(name="Expires In", value=str(timedelta(seconds=int(remaining.total_seconds()))))
+        
+        if data.get('icon'):
+            embed.set_thumbnail(url=data['icon'])
+        if data.get('buffs'):
+            embed.add_field(name="Buffs", value=data['buffs'], inline=False)
             
         await ctx.send(embed=embed)
 
-    @commands.command(name='titles', help='Show a summary of all titles.')
-    async def titles(self, ctx):
-        embed = discord.Embed(title="Server Title Summary", color=discord.Color.gold())
+    # --- Helper methods for logic ---
+
+    async def release_logic(self, ctx, title_name, user_id, reason):
+        """Core logic for releasing a title and processing the queue."""
+        log_action('release', user_id, {'title': title_name, 'reason': reason})
         
-        if not self.state['titles']:
-            embed.description = "No titles have been configured yet."
-            return await ctx.send(embed=embed)
-            
-        for name, data in self.state['titles'].items():
-            status = ""
-            if data.get('change_due'):
-                status = "🔴 Change Due"
-            elif data.get('snoozed_until') and datetime.fromisoformat(data['snoozed_until']) > datetime.now(timezone.utc):
-                status = "Snoozed"
-            elif data['holder_id']:
-                status = "Held"
-            else:
-                status = "🟢 Available"
-
-            value = f"**Holder**: "
-            if data['holder_id']:
-                holder = ctx.guild.get_member(data['holder_id'])
-                claimed_at = datetime.fromisoformat(data['claimed_at'])
-                held_for = format_timedelta(datetime.now(timezone.utc) - claimed_at)
-                value += f"{holder.mention if holder else 'Unknown'} ({held_for})\n"
-            else:
-                value += "None\n"
-            
-            value += f"**Queue**: {len(data['queue'])} waiting\n"
-            value += f"**Status**: {status}"
-            embed.add_field(name=name, value=value, inline=True)
-            
-        await ctx.send(embed=embed)
+        state['titles'][title_name]['holder'] = None
+        state['titles'][title_name]['claim_date'] = None
+        state['titles'][title_name]['expiry_date'] = None
         
-    @commands.command(name='mytitle', help='Show which title you hold.')
-    async def mytitle(self, ctx):
-        for t_name, t_data in self.state['titles'].items():
-            if t_data['holder_id'] == ctx.author.id:
-                claimed_at = datetime.fromisoformat(t_data['claimed_at'])
-                held_for = format_timedelta(datetime.now(timezone.utc) - claimed_at)
-                await ctx.send(f"You currently hold the **{t_name}** title. You have held it for **{held_for}**.")
-                return
-        await ctx.send("You do not currently hold any title.")
+        # Clear any reminders sent for this title for the user
+        if 'reminders_sent' in state['users'].get(str(user_id), {}):
+            state['users'][str(user_id)]['reminders_sent'].pop(title_name, None)
 
-    # --- Guardian & Admin Commands ---
+        await self.process_queue(ctx, title_name)
+        await save_state()
 
-    @commands.command(name='assign', help='Assign a title to the next person in queue (Guardians only).')
-    @commands.check(is_guardian_or_admin)
-    async def assign(self, ctx, *, title_name: str):
-        title_name = title_name.title()
-        if title_name not in self.state['titles']:
-            return await ctx.send(f"❌ Title '{title_name}' does not exist.")
+    async def process_queue(self, ctx, title_name):
+        """Processes the queue for a title that has just become free."""
+        queue = state['titles'][title_name]['queue']
+        if not queue:
+            # Announce title is free if no one is in queue
+            await self.announce(f"👑 The title **'{title_name}'** is now available!")
+            return
 
-        title_data = self.state['titles'][title_name]
-        if not title_data.get('change_due'):
-            return await ctx.send(f"There is no pending assignment for **{title_name}**.")
-        if not title_data['queue']:
-            return await ctx.send(f"Cannot assign: the queue for **{title_name}** is empty.")
-
-        old_holder_id = title_data['holder_id']
-        new_holder_id = title_data['queue'].pop(0)
-
-        title_data['holder_id'] = new_holder_id
-        title_data['claimed_at'] = datetime.now(timezone.utc).isoformat()
-        title_data['change_due'] = False
-        title_data['snoozed_until'] = None
-        title_data['reminders_sent'] = 0
+        next_in_line_id = None
+        original_queue = list(queue) # Copy for iteration
         
-        await self._update_discord_roles(ctx.guild, old_holder_id, new_holder_id, title_name)
-        
-        log_event(title_name, 'assign', old_holder_id, new_holder_id, title_data['queue'], f"Assigned by {ctx.author.id}")
-        save_state(self.state)
-
-        new_holder = ctx.guild.get_member(new_holder_id)
-        confirmation_msg = f"✅ Confirmed: The **{title_name}** title has been assigned to {new_holder.mention if new_holder else 'Unknown User'}!"
-        
-        await ctx.send(confirmation_msg)
-        announce_channel = self.bot.get_channel(self.state['config']['announce_channel_id'])
-        if announce_channel and announce_channel.id != ctx.channel.id:
-            await announce_channel.send(confirmation_msg)
-
-    @commands.command(name='snooze', help='Delay notifications for a title (Guardians only).')
-    @commands.check(is_guardian_or_admin)
-    async def snooze(self, ctx, title_name: str, minutes: int):
-        title_name = title_name.title()
-        if title_name not in self.state['titles']:
-            return await ctx.send(f"❌ Title '{title_name}' does not exist.")
-        if minutes <= 0:
-            return await ctx.send("Please provide a positive number of minutes.")
-
-        title_data = self.state['titles'][title_name]
-        snooze_until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
-        title_data['snoozed_until'] = snooze_until.isoformat()
-        
-        log_event(title_name, 'snooze', notes=f"Snoozed for {minutes} minutes by {ctx.author.id}")
-        save_state(self.state)
-        
-        await ctx.send(f" snoozed for **{minutes}** minutes.")
-
-    @commands.command(name='force_release', help='Forcefully remove a holder (Admins only).')
-    @commands.has_permissions(manage_roles=True)
-    async def force_release(self, ctx, *, title_name: str):
-        title_name = title_name.title()
-        if title_name not in self.state['titles']:
-            return await ctx.send(f"❌ Title '{title_name}' does not exist.")
-
-        title_data = self.state['titles'][title_name]
-        if not title_data['holder_id']:
-            return await ctx.send(f"The **{title_name}** title is already unheld.")
-
-        old_holder_id = title_data['holder_id']
-        await self._update_discord_roles(ctx.guild, old_holder_id, None, title_name)
-        
-        if not title_data['queue']:
-            title_data['holder_id'] = None
-            title_data['claimed_at'] = None
-            log_event(title_name, 'force_release', previous_holder_id=old_holder_id, notes=f"Forced by {ctx.author.id}")
-            await ctx.send(f"✅ The **{title_name}** title has been forcefully released and is now available.")
-        else:
-            title_data['change_due'] = True
-            title_data['reminders_sent'] = 0
-            title_data['last_notified_at'] = datetime.now(timezone.utc).isoformat()
-            
-            log_event(title_name, 'force_release', old_holder_id, title_data['queue'][0], title_data['queue'], f"Forced by {ctx.author.id}, triggered guardian flow.")
-            
-            announce_channel = self.bot.get_channel(self.state['config']['announce_channel_id'])
-            if announce_channel:
-                holder = ctx.guild.get_member(old_holder_id)
-                next_in_queue = ctx.guild.get_member(title_data['queue'][0])
-                await announce_channel.send(
-                    f"**Title Change Due: {title_name}** (Forced Release)\n"
-                    f"Current: {holder.mention if holder else 'Unknown User'} → Next: {next_in_queue.mention if next_in_queue else 'Unknown User'}.\n"
-                    "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
-                )
-            await ctx.send(f"✅ The **{title_name}** holder has been removed. Guardians have been notified to assign it to the next in queue.")
-
-        save_state(self.state)
-
-    @commands.command(name='delete_title', help='Deletes a title from the bot (Admins only).')
-    @commands.has_permissions(manage_roles=True)
-    async def delete_title(self, ctx, *, title_name: str):
-        title_name = title_name.title()
-        if title_name not in self.state['titles']:
-            return await ctx.send(f"❌ Title '{title_name}' does not exist.")
-
-        del self.state['titles'][title_name]
-
-        if 'guardian_titles' in self.state['config'] and title_name in self.state['config']['guardian_titles']:
-            self.state['config']['guardian_titles'].remove(title_name)
-
-        log_event(title_name, 'delete', notes=f"Title deleted by {ctx.author.id}")
-        save_state(self.state)
-
-        await ctx.send(f"✅ The title **{title_name}** has been permanently deleted from the bot.")
-
-
-    @commands.command(name='set_min_hold', help='Set the minimum hold time in minutes.')
-    @commands.has_permissions(manage_roles=True)
-    async def set_min_hold(self, ctx, minutes: int):
-        if minutes < 0:
-            return await ctx.send("Minimum hold time cannot be negative.")
-        self.state['config']['min_hold_minutes'] = minutes
-        log_event(None, 'config_change', notes=f"min_hold_minutes set to {minutes} by {ctx.author.id}")
-        save_state(self.state)
-        await ctx.send(f"✅ Minimum title hold time set to **{minutes}** minutes.")
-
-    @commands.command(name='set_announce', help='Set the channel for guardian notifications.')
-    @commands.has_permissions(manage_roles=True)
-    async def set_announce(self, ctx, channel: discord.TextChannel):
-        self.state['config']['announce_channel_id'] = channel.id
-        log_event(None, 'config_change', notes=f"announce_channel_id set to {channel.id} by {ctx.author.id}")
-        save_state(self.state)
-        await ctx.send(f"✅ Guardian announcements will now be sent to {channel.mention}.")
-
-    @commands.command(name='set_guardians', help='Set guardian users or roles.')
-    @commands.has_permissions(manage_roles=True)
-    async def set_guardians(self, ctx, *mentions: commands.Greedy[typing.Union[discord.Member, discord.Role]]):
-        if not mentions:
-            return await ctx.send("Please mention at least one user or role.")
-        guardian_ids = [m.id for m in mentions]
-        self.state['config']['guardians'] = guardian_ids
-        log_event(None, 'config_change', notes=f"Guardians set to {guardian_ids} by {ctx.author.id}")
-        save_state(self.state)
-        mention_str = ' '.join([m.mention for m in mentions])
-        await ctx.send(f"✅ Guardians set to: {mention_str}")
-    
-    @commands.command(name='set_guardian_titles', help='Designate which titles are for guardians.')
-    @commands.has_permissions(manage_roles=True)
-    async def set_guardian_titles(self, ctx, *, title_list: str):
-        guardian_titles = [t.strip().title() for t in title_list.split(',')]
-        
-        for title in guardian_titles:
-            if title not in self.state['titles']:
-                return await ctx.send(f"❌ Error: The title '{title}' does not exist. Please import it first.")
-
-        self.state['config']['guardian_titles'] = guardian_titles
-        log_event(None, 'config_change', notes=f"Guardian titles set to {guardian_titles} by {ctx.author.id}")
-        save_state(self.state)
-        await ctx.send(f"✅ Guardian titles for the dashboard have been set to: **{', '.join(guardian_titles)}**")
-
-    @commands.command(name='set_title_details', help='Set icon and description for a title.')
-    @commands.has_permissions(manage_roles=True)
-    async def set_title_details(self, ctx, *, details: str):
-        """Sets the icon URL and description for a title for the dashboard.
-        Usage: !set_title_details Title Name | icon_url=https://... | description=Buffs here
-        """
-        try:
-            parts = [p.strip() for p in details.split('|')]
-            title_name = parts[0].title()
-            
-            if title_name not in self.state['titles']:
-                return await ctx.send(f"❌ Title '{title_name}' does not exist.")
-
-            details_dict = {}
-            for part in parts[1:]:
-                key, value = part.split('=', 1)
-                details_dict[key.strip()] = value.strip()
-
-            if 'icon_url' in details_dict:
-                self.state['titles'][title_name]['icon_url'] = details_dict['icon_url']
-            if 'description' in details_dict:
-                self.state['titles'][title_name]['description'] = details_dict['description']
-
-            log_event(title_name, 'config_change', notes=f"Details updated by {ctx.author.id}")
-            save_state(self.state)
-            await ctx.send(f"✅ Details for **{title_name}** have been updated.")
-
-        except Exception as e:
-            await ctx.send(f"❌ Invalid format. Please use: `!set_title_details Title Name | icon_url=... | description=...`")
-            logging.error(f"Error parsing set_title_details: {e}")
-
-
-    @commands.command(name='set_reminders', help='Set reminder frequency and count.')
-    @commands.has_permissions(manage_roles=True)
-    async def set_reminders(self, ctx, interval_minutes: int, max_count: int):
-        if interval_minutes <= 0 or max_count < 0:
-            return await ctx.send("Please provide positive values.")
-        self.state['config']['remind_every_minutes'] = interval_minutes
-        self.state['config']['max_reminders'] = max_count
-        log_event(None, 'config_change', notes=f"Reminders set to every {interval_minutes}m, max {max_count} by {ctx.author.id}")
-        save_state(self.state)
-        await ctx.send(f"✅ Due change reminders will be sent every **{interval_minutes}** minutes, up to **{max_count}** times.")
-
-    @commands.command(name='import_titles', help='Create or update the list of managed titles.')
-    @commands.has_permissions(manage_roles=True)
-    async def import_titles(self, ctx, *, title_list: str):
-        new_titles = [t.strip().title() for t in title_list.split(',') if t.strip()]
-        if not new_titles:
-            return await ctx.send("Please provide a comma-separated list of titles.")
-        
-        created_titles = []
-        for title_name in new_titles:
-            if title_name not in self.state['titles']:
-                self.state['titles'][title_name] = {
-                    "holder_id": None, "claimed_at": None, "queue": [], "schedule": [], "change_due": False,
-                    "snoozed_until": None, "reminders_sent": 0, "last_notified_at": None,
-                    "icon_url": None, "description": None
-                }
-                created_titles.append(title_name)
-            
-            if not discord.utils.get(ctx.guild.roles, name=title_name):
+        for user_id in original_queue:
+            # Check if the user already holds another title
+            if any(t['holder'] == user_id for t in state['titles'].values()):
                 try:
-                    await ctx.guild.create_role(name=title_name, reason="TitleRequest bot setup")
-                    await ctx.send(f"ℹ️ Created Discord role: **{title_name}**")
+                    user = await self.bot.fetch_user(user_id)
+                    await user.send(f"It's your turn for the title '{title_name}', but you already hold another title. Your turn has been skipped.")
+                    logger.info(f"Skipped {user.display_name} in queue for '{title_name}' as they hold another title.")
                 except discord.Forbidden:
-                    await ctx.send(f"⚠️ Could not create role **{title_name}**. Please check my permissions and role hierarchy.")
+                    logger.warning(f"Could not DM user {user_id} about being skipped in queue.")
+                queue.pop(0) # Remove from the front
+            else:
+                next_in_line_id = queue.pop(0)
+                break # Found a valid user
 
-        log_event(None, 'config_change', notes=f"Titles imported by {ctx.author.id}: {new_titles}")
-        save_state(self.state)
-        if created_titles:
-            await ctx.send(f"✅ **{len(created_titles)}** new titles were added: `{', '.join(created_titles)}`. Existing titles were preserved.")
+        if next_in_line_id:
+            state['titles'][title_name]['pending_claimant'] = next_in_line_id
+            user = ctx.guild.get_member(next_in_line_id)
+            user_mention = user.mention if user else f"<@{next_in_line_id}>"
+            
+            guardian_message = (f"👑 **Next in Queue:** {user_mention}, it's your turn for the title **'{title_name}'**! "
+                                f"A designated guardian must use `!assign {title_name} {user_mention}` to grant it to you.")
+            
+            await self.notify_guardians(ctx.guild, title_name, guardian_message)
+            
+            try: # Also DM the user
+                if user:
+                    await user.send(f"It's your turn for the title '{title_name}'! A guardian has been notified to assign it to you.")
+            except discord.Forbidden:
+                pass
         else:
-            await ctx.send("✅ All specified titles already exist. No new titles were added.")
+            # Everyone in the queue already had a title
+            await self.announce(f"👑 The title **'{title_name}'** is now available!")
 
-    @commands.command(name='config', help='Display the current bot configuration.')
-    @commands.has_permissions(manage_roles=True)
+    async def force_release_logic(self, title_name, actor_id, reason):
+        """Logic for forcing a release, callable by code (e.g., expiry)."""
+        if title_name not in state['titles'] or not state['titles'][title_name]['holder']:
+            return
+
+        user_id = state['titles'][title_name]['holder']
+        log_action('force_release', actor_id, {'title': title_name, 'released_user': user_id, 'reason': reason})
+
+        state['titles'][title_name]['holder'] = None
+        state['titles'][title_name]['claim_date'] = None
+        state['titles'][title_name]['expiry_date'] = None
+        
+        if 'reminders_sent' in state['users'].get(str(user_id), {}):
+            state['users'][str(user_id)]['reminders_sent'].pop(title_name, None)
+
+        # Need a context-like object to process queue. We can get the guild.
+        guild = self.bot.guilds[0]
+        # We can't send a message to a channel without a context, but we can announce.
+        # The process_queue function needs a ctx, let's adapt it or fake it.
+        class FakeContext:
+            def __init__(self, guild):
+                self.guild = guild
+        
+        await self.process_queue(FakeContext(guild), title_name)
+        await save_state()
+        await self.announce(f"👑 The title **'{title_name}'** held by <@{user_id}> has been automatically released. Reason: {reason}")
+    
+    async def announce(self, message):
+        """Sends a message to the configured announcement channel."""
+        channel_id = state.get('config', {}).get('announcement_channel')
+        if channel_id:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+                await channel.send(message)
+            except (discord.NotFound, discord.Forbidden) as e:
+                logger.error(f"Could not send to announcement channel {channel_id}: {e}")
+
+    async def notify_guardians(self, guild, title_name, message):
+        """Notifies designated guardians for a title, or all guardians if none are designated."""
+        notified_roles = set()
+        guardian_titles = state.get('config', {}).get('guardian_titles', {})
+        
+        # Find roles specifically for this title
+        for role_id_str, titles in guardian_titles.items():
+            if title_name in titles:
+                notified_roles.add(int(role_id_str))
+
+        # If no specific guardians, notify all guardian roles
+        if not notified_roles:
+            notified_roles.update(state.get('config', {}).get('guardian_roles', []))
+
+        if not notified_roles:
+            await self.announce(f"⚠️ **Guardian Alert:** No guardian roles configured to handle the request for **'{title_name}'**. An admin should set this up.")
+            return
+
+        full_message = ""
+        for role_id in notified_roles:
+            role = guild.get_role(role_id)
+            if role:
+                full_message += f"{role.mention} "
+        
+        full_message += f"\n{message}"
+        await self.announce(full_message)
+# main.py - Part 2/3
+
+    # --- Guardian and Admin Commands ---
+
+    @commands.command(help="Assign a title to a user. Usage: !assign <Title Name> <@User>")
+    @commands.check(is_guardian_or_admin)
+    async def assign(self, ctx, title_name: str, member: discord.Member):
+        title_name = title_name.strip()
+        
+        if not is_title_guardian(ctx.author, title_name):
+            await ctx.send(f"You are not a designated guardian for the title '{title_name}'.")
+            return
+
+        if title_name not in state['titles']:
+            await ctx.send(f"Title '{title_name}' does not exist.")
+            return
+
+        title = state['titles'][title_name]
+        pending_claimant = title.get('pending_claimant')
+
+        if pending_claimant != member.id:
+            await ctx.send(f"{member.display_name} is not the pending claimant for this title. "
+                           f"The current pending claimant is <@{pending_claimant}>.")
+            return
+            
+        # Check if user already holds a title
+        if any(t['holder'] == member.id for t in state['titles'].values()):
+            await ctx.send(f"{member.display_name} already holds a title. They must release it first.")
+            return
+
+        min_hold_hours = state['config']['min_hold_duration_hours']
+        now = datetime.utcnow()
+        expiry_date = now + timedelta(hours=min_hold_hours)
+
+        title['holder'] = member.id
+        title['claim_date'] = now.isoformat()
+        title['expiry_date'] = expiry_date.isoformat()
+        title['pending_claimant'] = None
+
+        log_action('assign', ctx.author.id, {'title': title_name, 'user': member.id})
+        await save_state()
+
+        await self.announce(f"🎉 Congratulations {member.mention}! You have been granted the title **'{title_name}'**.")
+        await ctx.send(f"Successfully assigned '{title_name}' to {member.display_name}.")
+
+    @commands.command(help="Extend a user's hold on a title. Usage: !snooze <Title Name> <hours>")
+    @commands.check(is_guardian_or_admin)
+    async def snooze(self, ctx, title_name: str, hours: int):
+        title_name = title_name.strip()
+        
+        if not is_title_guardian(ctx.author, title_name):
+            await ctx.send(f"You are not a designated guardian for the title '{title_name}'.")
+            return
+
+        if title_name not in state['titles']:
+            await ctx.send(f"Title '{title_name}' does not exist.")
+            return
+            
+        title = state['titles'][title_name]
+        if not title['holder']:
+            await ctx.send(f"The title '{title_name}' is not currently held.")
+            return
+
+        expiry = datetime.fromisoformat(title['expiry_date'])
+        new_expiry = expiry + timedelta(hours=hours)
+        title['expiry_date'] = new_expiry.isoformat()
+
+        log_action('snooze', ctx.author.id, {'title': title_name, 'user': title['holder'], 'hours': hours})
+        await save_state()
+        
+        holder = ctx.guild.get_member(title['holder'])
+        await ctx.send(f"Extended hold for {holder.display_name} on '{title_name}' by {hours} hours.")
+        await self.announce(f"⏰ The hold on **'{title_name}'** for {holder.mention} has been extended by {hours} hours.")
+
+    @commands.command(help="Forcibly remove a title from a user. Usage: !force_release <Title Name>")
+    @commands.check(is_guardian_or_admin)
+    async def force_release(self, ctx, *, title_name: str):
+        title_name = title_name.strip()
+
+        if not is_title_guardian(ctx.author, title_name):
+            await ctx.send(f"You are not a designated guardian for the title '{title_name}'.")
+            return
+
+        if title_name not in state['titles']:
+            await ctx.send(f"Title '{title_name}' does not exist.")
+            return
+
+        title = state['titles'][title_name]
+        if not title['holder']:
+            await ctx.send(f"The title '{title_name}' is not currently held.")
+            return
+            
+        released_user_id = title['holder']
+        reason = f"Forced by {ctx.author.display_name}"
+        await self.release_logic(ctx, title_name, released_user_id, reason)
+        
+        await ctx.send(f"Forcibly released '{title_name}' from <@{released_user_id}>.")
+        await self.announce(f"️️️️⚠️ The title **'{title_name}'** has been forcibly released by an admin/guardian.")
+
+    # --- Admin-Only Commands ---
+
+    @commands.command(help="Import titles from a comma-separated list. Usage: !import_titles <Title1, Title2, ...>")
+    @commands.has_permissions(administrator=True)
+    async def import_titles(self, ctx, *, titles_csv: str):
+        titles = [t.strip() for t in titles_csv.split(',')]
+        added_count = 0
+        for title in titles:
+            if title and title not in state['titles']:
+                state['titles'][title] = {
+                    'holder': None,
+                    'claim_date': None,
+                    'expiry_date': None,
+                    'queue': [],
+                    'icon': None,
+                    'buffs': None,
+                    'pending_claimant': None
+                }
+                added_count += 1
+        
+        if added_count > 0:
+            log_action('import_titles', ctx.author.id, {'count': added_count, 'titles': titles})
+            await save_state()
+            await ctx.send(f"Successfully added {added_count} new titles.")
+        else:
+            await ctx.send("No new titles were added. They may already exist.")
+
+    @commands.command(help="Delete a title permanently. Usage: !delete_title <Title Name>")
+    @commands.has_permissions(administrator=True)
+    async def delete_title(self, ctx, *, title_name: str):
+        title_name = title_name.strip()
+        if title_name in state['titles']:
+            del state['titles'][title_name]
+            # Also remove from guardian assignments
+            for role_id in state['config']['guardian_titles']:
+                if title_name in state['config']['guardian_titles'][role_id]:
+                    state['config']['guardian_titles'][role_id].remove(title_name)
+            
+            log_action('delete_title', ctx.author.id, {'title': title_name})
+            await save_state()
+            await ctx.send(f"Title '{title_name}' has been permanently deleted.")
+        else:
+            await ctx.send("Title not found.")
+
+    @commands.command(help="Set the minimum hold duration for titles. Usage: !set_min_hold <hours>")
+    @commands.has_permissions(administrator=True)
+    async def set_min_hold(self, ctx, hours: int):
+        state['config']['min_hold_duration_hours'] = hours
+        log_action('set_config', ctx.author.id, {'key': 'min_hold_duration_hours', 'value': hours})
+        await save_state()
+        await ctx.send(f"Minimum title hold duration set to {hours} hours.")
+
+    @commands.command(help="Set the channel for bot announcements. Usage: !set_announce <#channel>")
+    @commands.has_permissions(administrator=True)
+    async def set_announce(self, ctx, channel: discord.TextChannel):
+        state['config']['announcement_channel'] = channel.id
+        log_action('set_config', ctx.author.id, {'key': 'announcement_channel', 'value': channel.id})
+        await save_state()
+        await ctx.send(f"Announcement channel set to {channel.mention}.")
+
+    @commands.command(name="set_guardians", help="Set roles that can manage titles. Usage: !set_guardians <@Role1> <@Role2> ...")
+    @commands.has_permissions(administrator=True)
+    async def set_guardians(self, ctx, roles: commands.Greedy[discord.Role]):
+        if not roles:
+            state['config']['guardian_roles'] = []
+            await ctx.send("Guardian roles cleared.")
+        else:
+            role_ids = [role.id for role in roles]
+            state['config']['guardian_roles'] = role_ids
+            log_action('set_config', ctx.author.id, {'key': 'guardian_roles', 'value': role_ids})
+            await ctx.send(f"Guardian roles set to: {', '.join(r.mention for r in roles)}")
+        await save_state()
+
+    @commands.command(name="set_guardian_titles", help="Assign specific titles to a guardian role. Usage: !set_guardian_titles <@Role> <Title1, Title2, ...>")
+    @commands.has_permissions(administrator=True)
+    async def set_guardian_titles(self, ctx, role: discord.Role, *, titles_csv: str):
+        titles = [t.strip() for t in titles_csv.split(',')]
+        valid_titles = []
+        invalid_titles = []
+        for title in titles:
+            if title in state['titles']:
+                valid_titles.append(title)
+            else:
+                invalid_titles.append(title)
+
+        state['config']['guardian_titles'][str(role.id)] = valid_titles
+        log_action('set_config', ctx.author.id, {'key': 'guardian_titles', 'role': role.id, 'titles': valid_titles})
+        await save_state()
+        
+        response = f"Role {role.mention} is now a guardian for: {', '.join(valid_titles)}."
+        if invalid_titles:
+            response += f"\nCould not find the following titles: {', '.join(invalid_titles)}."
+        await ctx.send(response)
+
+    @commands.command(help="Set details for a title. Usage: !set_title_details <Title Name> <icon|buffs> <value>")
+    @commands.has_permissions(administrator=True)
+    async def set_title_details(self, ctx, title_name: str, detail_type: str, *, value: str):
+        title_name = title_name.strip()
+        detail_type = detail_type.lower()
+        if title_name not in state['titles']:
+            await ctx.send("Title not found.")
+            return
+        if detail_type not in ['icon', 'buffs']:
+            await ctx.send("Invalid detail type. Use 'icon' or 'buffs'.")
+            return
+            
+        state['titles'][title_name][detail_type] = value
+        log_action('set_title_details', ctx.author.id, {'title': title_name, 'detail': detail_type, 'value': value})
+        await save_state()
+        await ctx.send(f"Set {detail_type} for '{title_name}'.")
+
+    @commands.command(help="Add/update a reminder. Usage: !set_reminders <hours> <message>")
+    @commands.has_permissions(administrator=True)
+    async def set_reminders(self, ctx, hours: int, *, message: str):
+        if hours <= 0:
+            await ctx.send("Hours must be a positive number.")
+            return
+        state['config']['reminders'][hours] = message
+        log_action('set_config', ctx.author.id, {'key': 'reminders', 'hours': hours, 'message': message})
+        await save_state()
+        await ctx.send(f"Set reminder for {hours} hours before expiry.")
+
+    @commands.command(help="Show current bot configuration.")
+    @commands.has_permissions(administrator=True)
     async def config(self, ctx):
-        cfg = self.state['config']
-        embed = discord.Embed(title="TitleRequest Bot Configuration", color=discord.Color.dark_grey())
+        conf = state['config']
+        min_hold = conf['min_hold_duration_hours']
         
-        embed.add_field(name="Min Hold Time", value=f"{cfg['min_hold_minutes']} minutes", inline=True)
+        channel_id = conf['announcement_channel']
+        channel = f"<#{channel_id}>" if channel_id else "Not set"
         
-        channel = self.bot.get_channel(cfg['announce_channel_id']) if cfg['announce_channel_id'] else "Not set"
-        embed.add_field(name="Announce Channel", value=channel.mention if hasattr(channel, 'mention') else channel, inline=True)
-
-        embed.add_field(name="Reminders", value=f"Every {cfg['remind_every_minutes']}m, max {cfg['max_reminders']} times", inline=True)
+        guardian_roles = [f"<@&{rid}>" for rid in conf['guardian_roles']] or ["Not set"]
         
-        guardians_list = []
-        for gid in cfg['guardians']:
-            g_obj = ctx.guild.get_member(gid) or ctx.guild.get_role(gid)
-            if g_obj:
-                guardians_list.append(g_obj.mention)
-        embed.add_field(name="Guardians", value=' '.join(guardians_list) if guardians_list else "Not set", inline=False)
+        embed = discord.Embed(title="Bot Configuration", color=discord.Color.orange())
+        embed.add_field(name="Min Hold Duration", value=f"{min_hold} hours", inline=False)
+        embed.add_field(name="Announcement Channel", value=channel, inline=False)
+        embed.add_field(name="Guardian Roles", value=', '.join(guardian_roles), inline=False)
         
-        titles_list = ", ".join(self.state['titles'].keys()) or "None"
-        embed.add_field(name="Managed Titles", value=titles_list, inline=False)
-
-        guardian_titles_list = ", ".join(cfg.get('guardian_titles', [])) or "None"
-        embed.add_field(name="Guardian Titles (Dashboard)", value=guardian_titles_list, inline=False)
+        reminders = "\n".join([f"{h}h: {msg}" for h, msg in conf['reminders'].items()]) or "None"
+        embed.add_field(name="Reminders", value=reminders, inline=False)
+        
+        guardian_titles = []
+        for role_id, titles in conf['guardian_titles'].items():
+            guardian_titles.append(f"<@&{role_id}>: {', '.join(titles)}")
+        embed.add_field(name="Title-Specific Guardians", value='\n'.join(guardian_titles) or "None", inline=False)
         
         await ctx.send(embed=embed)
 
     # --- History Commands ---
 
-    @commands.command(name='history', help='Show the last N events for a title.')
-    async def history(self, ctx, title_name: str, count: int = 10):
-        title_name = title_name.title()
+    @commands.command(help="Show the last 10 log entries for a user or title. Usage: !history <@User or Title Name>")
+    async def history(self, ctx, *, query: str):
+        try:
+            member = await commands.MemberConverter().convert(ctx, query)
+            is_user_query = True
+        except commands.MemberNotFound:
+            member = None
+            is_user_query = False
+
         if not os.path.exists(LOG_FILE):
-            return await ctx.send("No history log found.")
+            await ctx.send("Log file not found.")
+            return
         
         with open(LOG_FILE, 'r') as f:
-            logs = json.load(f)
+            try:
+                logs = json.load(f)
+            except json.JSONDecodeError:
+                logs = []
 
-        title_logs = [log for log in logs if log['title'] and log['title'].lower() == title_name.lower()]
-        if not title_logs:
-            return await ctx.send(f"No history found for **{title_name}**.")
-            
-        description = []
-        for log in reversed(title_logs[-count:]):
-            ts = datetime.fromisoformat(log['timestamp']).strftime('%Y-%m-%d %H:%M UTC')
-            description.append(f"`{ts}` - **{log['action'].upper()}** - {log.get('notes') or '...'}")
+        filtered_logs = []
+        if is_user_query:
+            for log in logs:
+                if log.get('user_id') == member.id or log.get('details', {}).get('user') == member.id or log.get('details', {}).get('released_user') == member.id:
+                    filtered_logs.append(log)
+            title_text = f"History for {member.display_name}"
+        else: # Title query
+            for log in logs:
+                if log.get('details', {}).get('title') == query:
+                    filtered_logs.append(log)
+            title_text = f"History for Title '{query}'"
 
-        embed = discord.Embed(title=f"Recent History for {title_name}", description="\n".join(description), color=discord.Color.purple())
+        if not filtered_logs:
+            await ctx.send("No history found for that query.")
+            return
+
+        embed = discord.Embed(title=title_text, color=discord.Color.purple())
+        for log in reversed(filtered_logs[-10:]):
+            ts = datetime.fromisoformat(log['timestamp']).strftime('%Y-%m-%d %H:%M')
+            user = f"<@{log['user_id']}>"
+            action = log['action'].replace('_', ' ').title()
+            details = ', '.join([f"{k}: {v}" for k, v in log['details'].items()])
+            embed.add_field(name=f"[{ts}] {action} by {user}", value=f"```{details}```", inline=False)
+        
         await ctx.send(embed=embed)
 
-    @commands.command(name='fullhistory', help='Show the last N events across all titles.')
-    async def fullhistory(self, ctx, count: int = 10):
-        if not os.path.exists(LOG_FILE):
-            return await ctx.send("No history log found.")
-        
-        with open(LOG_FILE, 'r') as f:
-            logs = json.load(f)
+    @commands.command(help="Get the full history file.")
+    @commands.has_permissions(administrator=True)
+    async def fullhistory(self, ctx):
+        if os.path.exists(LOG_FILE):
+            await ctx.send(file=discord.File(LOG_FILE))
+        else:
+            await ctx.send("Log file does not exist.")
 
-        if not logs:
-            return await ctx.send("History is empty.")
-            
-        description = []
-        for log in reversed(logs[-count:]):
-            ts = datetime.fromisoformat(log['timestamp']).strftime('%Y-%m-%d %H:%M UTC')
-            title_str = f"**{log['title']}**: " if log['title'] else ""
-            description.append(f"`{ts}` - {title_str}**{log['action'].upper()}** - {log.get('notes') or '...'}")
-        
-        embed = discord.Embed(title="Recent Global History", description="\n".join(description), color=discord.Color.purple())
-        await ctx.send(embed=embed)
+    @commands.command(help="Book a 1-hour time slot for a title. Usage: !schedule <Title Name> <YYYY-MM-DD> <HH:00>")
+    async def schedule(self, ctx, title_name: str, date_str: str, time_str: str):
+        title_name = title_name.strip()
+        if title_name not in state['titles']:
+            await ctx.send("Title not found.")
+            return
 
+        try:
+            schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+            if schedule_time.minute != 0:
+                raise ValueError
+        except ValueError:
+            await ctx.send("Invalid date/time format. Use YYYY-MM-DD and HH:00 (24-hour format).")
+            return
 
-# --- Bot Startup ---
+        if schedule_time < datetime.now():
+            await ctx.send("Cannot schedule a time in the past.")
+            return
+
+        title_schedules = state['schedules'].setdefault(title_name, {})
+        schedule_key = schedule_time.isoformat()
+
+        if schedule_key in title_schedules:
+            await ctx.send(f"This time slot is already booked by <@{title_schedules[schedule_key]}>.")
+            return
+
+        # Check for user conflicts
+        for schedules in state['schedules'].values():
+            if schedule_key in schedules and schedules[schedule_key] == ctx.author.id:
+                await ctx.send("You have already booked another title for this exact time slot.")
+                return
+
+        title_schedules[schedule_key] = ctx.author.id
+        log_action('schedule_book', ctx.author.id, {'title': title_name, 'time': schedule_key})
+        await save_state()
+        await ctx.send(f"Successfully booked '{title_name}' for {date_str} at {time_str} UTC.")
+# main.py - Part 3/3
+
+# --- Bot Startup and Web Server ---
 
 @bot.event
 async def on_ready():
-    logging.info(f'Logged in as {bot.user.name} ({bot.user.id})')
-    logging.info('------')
+    """Event that runs when the bot is ready."""
+    await load_state()
     await bot.add_cog(TitleCog(bot))
-    current_state = load_state()
-    if not current_state['titles']:
-        logging.info("No titles found in state. Seeding with defaults.")
-        for title_name in DEFAULT_TITLES:
-            current_state['titles'][title_name] = {
-                "holder_id": None, "claimed_at": None, "queue": [], "schedule": [], "change_due": False,
-                "snoozed_until": None, "reminders_sent": 0, "last_notified_at": None,
-                "icon_url": None, "description": None
-            }
-        save_state(current_state)
-        log_event(None, 'config_change', notes="Initial seeding of default titles.")
+    logger.info(f'{bot.user.name} has connected to Discord!')
+    logger.info(f'State loaded. Found {len(state.get("titles", {}))} titles.')
+    # Start the Flask server in a separate thread
+    flask_thread = Thread(target=run_flask_app, daemon=True)
+    flask_thread.start()
+    logger.info("Flask web server started.")
 
-# --- Web Server & Live Dashboard ---
-app = Flask('')
+# --- Flask Web Server ---
+app = Flask(__name__)
 
-@app.route('/')
-def home():
+def get_bot_state():
+    """Safely gets a copy of the bot's state for Flask."""
+    # This is a simplified approach. For high-concurrency, a more robust
+    # IPC mechanism like Redis or a dedicated API might be better.
+    # For this project, we assume the global state is sufficient.
+    return state
+
+def get_guild_and_members():
+    """Gets the guild and member list from the running bot."""
     if not bot.is_ready() or not bot.guilds:
-        return """
-        <!DOCTYPE html><html><head><title>Bot Status</title><meta http-equiv="refresh" content="10">
-        <style>body{background-color:#121212;color:#e0e0e0;font-family:sans-serif;text-align:center;padding-top:20%;}</style>
-        </head><body><h1>Bot is starting up...</h1><p>The dashboard will be available shortly. This page will refresh automatically.</p></body></html>
-        """, 503
-
-    cog = bot.get_cog('TitleRequest')
-    if not cog:
-        return "<h1>Error: Bot cog not loaded. Please check the logs.</h1>", 500
-    
-    state = cog.state
+        return None, {}
     guild = bot.guilds[0]
+    members = {str(m.id): m.display_name for m in guild.members}
+    return guild, members
+
+@app.route("/")
+def dashboard():
+    """Renders the main dashboard."""
+    bot_state = get_bot_state()
+    guild, members = get_guild_and_members()
     
-    guardian_title_names = state['config'].get('guardian_titles', [])
-    guardian_titles = {}
-    other_titles = {}
-
-    for title_name, data in sorted(state['titles'].items()):
-        if title_name in guardian_title_names:
-            guardian_titles[title_name] = data
-        else:
-            other_titles[title_name] = data
-
-    log_history = []
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, 'r') as f:
-            logs = json.load(f)
+    titles_data = []
+    for name, data in sorted(bot_state.get('titles', {}).items()):
+        holder_name = members.get(str(data['holder'])) if data['holder'] else "None"
+        pending_name = members.get(str(data['pending_claimant'])) if data.get('pending_claimant') else "None"
         
-        change_events = [log for log in logs if log['action'] in ('claim', 'assign', 'force_release', 'release')]
-        
-        for log in reversed(change_events[-15:]):
-            ts = datetime.fromisoformat(log['timestamp']).strftime('%b %d, %H:%M UTC')
-            
-            new_holder_name = "N/A"
-            if log['new_holder_id']:
-                member = guild.get_member(log['new_holder_id'])
-                new_holder_name = member.display_name if member else f"ID: {log['new_holder_id']}"
-
-            prev_holder_name = "N/A"
-            if log['previous_holder_id']:
-                 member = guild.get_member(log['previous_holder_id'])
-                 prev_holder_name = member.display_name if member else f"ID: {log['previous_holder_id']}"
-
-            action_map = {
-                'claim': ('CROWNED', '👑'), 'assign': ('PASSED', '🤝'),
-                'force_release': ('REMOVED', '🛡️'), 'release': ('RELEASED', '🕊️')
-            }
-            action_text, action_icon = action_map.get(log['action'], (log['action'].upper(), ''))
-            
-            log_history.append({
-                "ts": ts, "title": log['title'], "action_icon": action_icon,
-                "action_text": action_text, "new_holder": new_holder_name, "prev_holder": prev_holder_name
-            })
-
-    def generate_title_cards(title_dict):
-        cards_html = ""
-        if not title_dict:
-            return "<p class='no-titles'>No titles in this category.</p>"
-
-        for title_name, data in title_dict.items():
-            status_class, status_text = "", ""
-            if data.get('change_due'):
-                status_class, status_text = "status-due", "ASSIGNMENT DUE"
-            elif data['holder_id']:
-                status_class, status_text = "status-held", "HELD"
+        remaining = "N/A"
+        if data.get('expiry_date'):
+            expiry = datetime.fromisoformat(data['expiry_date'])
+            delta = expiry - datetime.utcnow()
+            if delta.total_seconds() > 0:
+                remaining = str(timedelta(seconds=int(delta.total_seconds())))
             else:
-                status_class, status_text = "status-available", "AVAILABLE"
+                remaining = "Expired"
 
-            icon_html = f'<img src="{data.get("icon_url")}" class="title-icon" alt="Title Icon">' if data.get("icon_url") else '<div class="title-icon-placeholder"></div>'
-            
-            holder_html = f'<p class="info-line"><span class="label">Holder:</span> <span class="{status_class}">{status_text}</span></p>'
-            if data['holder_id']:
-                holder = guild.get_member(data['holder_id'])
-                holder_name = holder.display_name if holder else f"User ID: {data['holder_id']}"
-                claimed_at = datetime.fromisoformat(data['claimed_at'])
-                held_for = format_timedelta(datetime.now(timezone.utc) - claimed_at)
-                holder_html = f"""
-                    <p class="info-line"><span class="label">Holder:</span> <span class="{status_class}">{holder_name}</span></p>
-                    <p class="info-line"><span class="label">Held For:</span> {held_for}</p>
-                """
+        queue_names = [members.get(str(uid), f"ID: {uid}") for uid in data.get('queue', [])]
+        
+        titles_data.append({
+            'name': name,
+            'holder': holder_name,
+            'pending': pending_name,
+            'expires_in': remaining,
+            'queue': queue_names,
+            'icon': data.get('icon'),
+            'buffs': data.get('buffs')
+        })
+        
+    return render_template('dashboard.html', titles=titles_data)
 
-            description_html = f'<p class="description">{data.get("description", "")}</p>' if data.get("description") else ""
+@app.route("/scheduler")
+def scheduler():
+    """Renders the interactive scheduler page."""
+    bot_state = get_bot_state()
+    guild, members = get_guild_and_members()
+    
+    # Generate calendar data for the next 7 days
+    today = datetime.utcnow().date()
+    days = [(today + timedelta(days=i)) for i in range(7)]
+    hours = [f"{h:02d}:00" for h in range(24)]
+    
+    # Get all title names
+    title_names = sorted(bot_state.get('titles', {}).keys())
 
-            queue_html = '<p class="queue-empty">The queue is empty.</p>'
-            if data['queue']:
-                queue_items = ""
-                for i, user_id in enumerate(data['queue']):
-                    user = guild.get_member(user_id)
-                    user_name = user.display_name if user else f"User ID: {user_id}"
-                    queue_items += f'<li><span class="queue-pos">{i+1}.</span> {user_name}</li>'
-                queue_html = f'<ol class="queue-list">{queue_items}</ol>'
+    # Get existing schedules
+    schedules = bot_state.get('schedules', {})
+    
+    return render_template('scheduler.html', days=days, hours=hours, titles=title_names, schedules=schedules, members=members)
 
-            cards_html += f"""
-            <div class="card">
-                <div class="card-header">
-                    {icon_html}
-                    <h2>{title_name}</h2>
-                    <span class="status-badge {status_class}">{status_text}</span>
-                </div>
-                <div class="card-body">
-                    {holder_html}
-                    {description_html}
-                    <p class="info-line label queue-label">Queue:</p>
-                    {queue_html}
-                </div>
+@app.route("/request-title", methods=['POST'])
+def request_title():
+    """Handles the web form for requesting a title."""
+    title_name = request.form.get('title_name')
+    user_id_str = request.form.get('user_id')
+    
+    if not title_name or not user_id_str:
+        return "Missing form data.", 400
+
+    try:
+        user_id = int(user_id_str)
+    except ValueError:
+        return "Invalid User ID.", 400
+
+    # This is a simplified simulation. A real implementation would need
+    # to find the user in the guild and trigger the !claim command logic.
+    # For now, we'll just log it.
+    logger.info(f"Web request received for title '{title_name}' by user ID '{user_id}'.")
+    log_action('web_claim_request', user_id, {'title': title_name, 'source': 'web_form'})
+    
+    # A more advanced version would use bot.loop.call_soon_threadsafe
+    # to interact with the bot's async logic.
+    
+    return redirect(url_for('dashboard'))
+
+@app.route("/book-slot", methods=['POST'])
+def book_slot():
+    """Handles booking a time slot from the web scheduler."""
+    title_name = request.form.get('title')
+    date_str = request.form.get('date')
+    time_str = request.form.get('time')
+    user_id_str = request.form.get('user_id') # This needs to be securely obtained in a real app
+
+    if not all([title_name, date_str, time_str, user_id_str]):
+        return "Missing data for booking.", 400
+        
+    # This is a simplified example. A real app needs authentication to get the user ID.
+    # We'll assume it's passed for this demonstration.
+    try:
+        user_id = int(user_id_str)
+        schedule_time = datetime.fromisoformat(f"{date_str}T{time_str}")
+    except (ValueError, TypeError):
+        return "Invalid data format.", 400
+
+    # This function would need to be thread-safe to modify the bot's state.
+    # We use call_soon_threadsafe to schedule the async function from this thread.
+    async def do_booking():
+        async with state_lock:
+            title_schedules = state['schedules'].setdefault(title_name, {})
+            schedule_key = schedule_time.isoformat()
+            if schedule_key not in title_schedules:
+                title_schedules[schedule_key] = user_id
+                log_action('schedule_book_web', user_id, {'title': title_name, 'time': schedule_key})
+                await save_state() # save_state is async
+    
+    bot.loop.call_soon_threadsafe(asyncio.create_task, do_booking())
+    
+    return redirect(url_for('scheduler'))
+
+def run_flask_app():
+    """Runs the Flask app."""
+    # Note: In a production environment, use a proper WSGI server like Gunicorn.
+    app.run(host='0.0.0.0', port=8080)
+
+# --- Create Flask Templates (in-memory) ---
+# In a real project, these would be in a 'templates' folder.
+if not os.path.exists('templates'):
+    os.makedirs('templates')
+
+dashboard_template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TitleRequest Dashboard</title>
+    <style>
+        body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
+        h1, h2 { color: #ffffff; }
+        .container { max-width: 1200px; margin: auto; }
+        .title-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+        .title-card { background-color: #2f3136; border-radius: 8px; padding: 20px; border-left: 5px solid #7289da; }
+        .title-card h3 { margin-top: 0; display: flex; align-items: center; }
+        .title-card img { width: 24px; height: 24px; margin-right: 10px; border-radius: 50%; }
+        .title-card p { margin: 5px 0; }
+        .title-card strong { color: #ffffff; }
+        .queue { list-style: none; padding-left: 0; }
+        .queue li { background-color: #40444b; padding: 5px 10px; border-radius: 4px; margin-top: 5px; }
+        .form-card { background-color: #2f3136; padding: 20px; border-radius: 8px; margin-top: 2em; }
+        input, select, button { width: 100%; padding: 10px; margin-top: 10px; border-radius: 4px; border: 1px solid #202225; background-color: #40444b; color: #dcddde; }
+        button { background-color: #7289da; cursor: pointer; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>👑 TitleRequest Dashboard</h1>
+        <p>Live status of all server titles. <a href="/scheduler">View Scheduler</a></p>
+        <div class="title-grid">
+            {% for title in titles %}
+            <div class="title-card">
+                <h3>
+                    {% if title.icon %}<img src="{{ title.icon }}" alt="icon">{% endif %}
+                    {{ title.name }}
+                </h3>
+                <p><strong>Status:</strong> 
+                    {% if title.holder != 'None' %} Held
+                    {% elif title.pending != 'None' %} Pending Approval
+                    {% else %} Available
+                    {% endif %}
+                </p>
+                <p><strong>Holder:</strong> {{ title.holder }}</p>
+                <p><strong>Expires In:</strong> {{ title.expires_in }}</p>
+                {% if title.buffs %}<p><strong>Buffs:</strong> {{ title.buffs }}</p>{% endif %}
+                {% if title.queue %}
+                <h4>Queue:</h4>
+                <ul class="queue">
+                    {% for user in title.queue %}
+                    <li>{{ user }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
             </div>
-            """
-        return cards_html
-
-    guardian_cards_html = generate_title_cards(guardian_titles)
-    other_cards_html = generate_title_cards(other_titles)
-
-    history_rows_html = ""
-    if log_history:
-        for entry in log_history:
-            history_rows_html += f"""
-            <tr>
-                <td>{entry['ts']}</td>
-                <td>{entry['title']}</td>
-                <td><span class="action-icon">{entry['action_icon']}</span> {entry['action_text']}</td>
-                <td>{entry['new_holder']}</td>
-                <td>{entry['prev_holder']}</td>
-            </tr>
-            """
-    else:
-        history_rows_html = '<tr><td colspan="5">No title change events found.</td></tr>'
-
-    html = f"""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <title>TitleRequest Bot Dashboard</title>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <meta http-equiv="refresh" content="60">
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
-        <style>
-            :root {{
-                --bg-color: #0d1117; --card-bg: #161b22; --border-color: #30363d;
-                --text-primary: #c9d1d9; --text-secondary: #8b949e;
-                --accent-purple: #bb86fc; --accent-green: #3fb950; --accent-blue: #58a6ff; --accent-red: #f85149;
-            }}
-            body {{ font-family: 'Inter', sans-serif; background-color: var(--bg-color); color: var(--text-primary); margin: 0; padding: 2.5em; line-height: 1.6; }}
-            .container {{ max-width: 1400px; margin: auto; }}
-            .header {{ text-align: center; margin-bottom: 2.5em; }}
-            .header h1 {{ font-size: 2.5rem; color: #fff; margin-bottom: 0.2em; }}
-            .header p {{ color: var(--text-secondary); }}
-            .section-title {{ font-size: 1.8rem; color: #fff; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5em; margin-top: 2.5em; margin-bottom: 1em; }}
-            .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 25px; }}
-            .card {{ background-color: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; transition: transform 0.2s ease, box-shadow 0.2s ease; }}
-            .card:hover {{ transform: translateY(-5px); box-shadow: 0 8px 20px rgba(0,0,0,0.3); }}
-            .card-header {{ display: flex; align-items: center; padding: 15px 20px; border-bottom: 1px solid var(--border-color); gap: 15px; }}
-            .title-icon {{ width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background-color: #21262d; }}
-            .title-icon-placeholder {{ width: 40px; height: 40px; border-radius: 50%; background-color: #21262d; }}
-            .card-header h2 {{ margin: 0; font-size: 1.25rem; color: var(--text-primary); flex-grow: 1; }}
-            .status-badge {{ font-size: 0.75rem; font-weight: 700; padding: 4px 8px; border-radius: 12px; white-space: nowrap; }}
-            .status-held {{ background-color: rgba(88, 166, 255, 0.2); color: var(--accent-blue); }}
-            .status-available {{ background-color: rgba(63, 185, 80, 0.2); color: var(--accent-green); }}
-            .status-due {{ background-color: rgba(248, 81, 73, 0.2); color: var(--accent-red); }}
-            .card-body {{ padding: 20px; }}
-            .info-line {{ margin: 0 0 10px 0; color: var(--text-secondary); }}
-            .label {{ font-weight: 500; color: var(--text-primary); }}
-            .description {{ font-style: italic; color: var(--text-secondary); border-left: 3px solid var(--accent-purple); padding-left: 10px; margin: 15px 0; }}
-            .queue-label {{ margin-top: 15px; }}
-            .queue-list {{ padding-left: 20px; margin: 0; }}
-            .queue-list li {{ margin-bottom: 5px; color: var(--text-secondary); }}
-            .queue-pos {{ font-weight: 700; color: var(--accent-purple); margin-right: 5px; }}
-            .queue-empty, .no-titles {{ color: var(--text-secondary); font-style: italic; padding: 20px 0; }}
-            .table-wrapper {{ overflow-x: auto; }}
-            .history-table {{ width: 100%; border-collapse: collapse; margin-top: 1em; }}
-            .history-table th, .history-table td {{ padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border-color); white-space: nowrap; }}
-            .history-table th {{ font-weight: 700; color: var(--text-primary); }}
-            .history-table td {{ color: var(--text-secondary); }}
-            .action-icon {{ margin-right: 8px; }}
-            footer {{ text-align: center; margin-top: 3em; color: var(--text-secondary); font-size: 0.9em; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header"><h1>TitleRequest Bot Dashboard</h1><p>Last updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} (Page auto-refreshes every 60 seconds)</p></div>
-            <h2 class="section-title">Guardian Titles</h2><div class="grid">{guardian_cards_html}</div>
-            <h2 class="section-title">Standard Titles</h2><div class="grid">{other_cards_html}</div>
-            <h2 class="section-title">Recent Events</h2><div class="table-wrapper"><table class="history-table"><thead><tr><th>Timestamp</th><th>Title</th><th>Action</th><th>New Holder</th><th>Previous Holder</th></tr></thead><tbody>{history_rows_html}</tbody></table></div>
-            <footer>Powered by TitleRequest Bot for {guild.name}</footer>
+            {% endfor %}
         </div>
-    </body>
-    </html>
-    """
-    return html
 
-def run():
-  app.run(host='0.0.0.0',port=8080)
+        <div class="form-card">
+            <h2>Request a Title</h2>
+            <form action="/request-title" method="POST">
+                <p>Note: This is a simplified form for demonstration. In a real app, you would be authenticated via Discord OAuth2.</p>
+                <label for="title_name">Title Name:</label>
+                <select id="title_name" name="title_name" required>
+                    {% for title in titles %}<option value="{{ title.name }}">{{ title.name }}</option>{% endfor %}
+                </select>
+                <label for="user_id">Your Discord User ID:</label>
+                <input type="text" id="user_id" name="user_id" placeholder="Enter your Discord User ID" required>
+                <button type="submit">Submit Request</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+"""
+with open('templates/dashboard.html', 'w') as f:
+    f.write(dashboard_template)
 
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
+scheduler_template = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Title Scheduler</title>
+    <style>
+        body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
+        h1 { color: #ffffff; }
+        .container { max-width: 1400px; margin: auto; }
+        .calendar-view { overflow-x: auto; }
+        table { border-collapse: collapse; width: 100%; margin-top: 1em; }
+        th, td { border: 1px solid #40444b; padding: 8px; text-align: center; min-width: 120px; }
+        th { background-color: #2f3136; }
+        .time-header { min-width: 80px; }
+        .booked { background-color: #f04747; color: white; font-size: 0.8em; }
+        .available { background-color: #43b581; cursor: pointer; }
+        .form-card { background-color: #2f3136; padding: 20px; border-radius: 8px; margin-top: 2em; }
+        input, select, button { width: 100%; padding: 10px; margin-top: 10px; border-radius: 4px; border: 1px solid #202225; background-color: #40444b; color: #dcddde; }
+        button { background-color: #7289da; cursor: pointer; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🗓️ Title Scheduler</h1>
+        <p>Book a 1-hour time slot for a title. All times are in UTC. <a href="/">Back to Dashboard</a></p>
+        
+        <div class="form-card">
+            <h2>Book a Slot</h2>
+            <form action="/book-slot" method="POST">
+                <p>Note: This is a simplified form. In a real app, you would be authenticated.</p>
+                <label for="title">Title:</label>
+                <select id="title" name="title" required>
+                    {% for title in titles %}<option value="{{ title }}">{{ title }}</option>{% endfor %}
+                </select>
+                <label for="date">Date:</label>
+                <input type="date" id="date" name="date" required>
+                <label for="time">Time (UTC, hour):</label>
+                <select id="time" name="time" required>
+                    {% for hour in hours %}<option value="{{ hour }}">{{ hour }}</option>{% endfor %}
+                </select>
+                <label for="user_id">Your Discord User ID:</label>
+                <input type="text" id="user_id" name="user_id" placeholder="Enter your Discord User ID" required>
+                <button type="submit">Book Slot</button>
+            </form>
+        </div>
+
+        <h2>Upcoming Week Schedule</h2>
+        <div class="calendar-view">
+            <table>
+                <thead>
+                    <tr>
+                        <th class="time-header">Time (UTC)</th>
+                        {% for day in days %}
+                        <th>{{ day.strftime('%A') }}<br>{{ day.strftime('%Y-%m-%d') }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for hour in hours %}
+                    <tr>
+                        <td class="time-header">{{ hour }}</td>
+                        {% for day in days %}
+                        <td>
+                            {% for title_name, schedule_data in schedules.items() %}
+                                {% set slot_time = day.strftime('%Y-%m-%d') + 'T' + hour + ':00' %}
+                                {% if schedule_data[slot_time] %}
+                                    <div class="booked">
+                                        <strong>{{ title_name }}</strong><br>
+                                        {{ members.get(schedule_data[slot_time]|string, 'Unknown') }}
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+"""
+with open('templates/scheduler.html', 'w') as f:
+    f.write(scheduler_template)
 
 # --- Final Bot Execution ---
-TOKEN = os.getenv('DISCORD_TOKEN')
-if not TOKEN:
-    raise ValueError("DISCORD_TOKEN environment variable not set.")
+if __name__ == "__main__":
+    # It's recommended to load the token from an environment variable for security
+    bot_token = os.getenv("DISCORD_BOT_TOKEN")
+    if not bot_token:
+        print("Error: DISCORD_BOT_TOKEN environment variable not set.")
+    else:
+        bot.run(bot_token)
 
-keep_alive()
-bot.run(TOKEN)
+# --- Final Deliverables ---
+#
+# ## Pip Install Commands
+#
+# pip install discord.py flask
+#
+# ## How to Run the Bot
+#
+# 1.  **Set Environment Variable:** Before running, you must set an environment
+#     variable to hold your Discord bot token.
+#
+#     -   On Linux/macOS: `export DISCORD_BOT_TOKEN="YOUR_TOKEN_HERE"`
+#     -   On Windows (Command Prompt): `set DISCORD_BOT_TOKEN="YOUR_TOKEN_HERE"`
+#     -   On Windows (PowerShell): `$env:DISCORD_BOT_TOKEN="YOUR_TOKEN_HERE"`
+#
+# 2.  **Run the Python script:**
+#
+#     `python main.py`
+#
+# 3.  **Web Dashboard:** Once the bot is running, the web dashboard will be
+#     accessible at `http://<your_server_ip>:8080`.
+#
+# ## State and Log Files
+#
+# The bot will automatically create two files in the same directory where it is run:
+#
+# -   `titles_state.json`: This file stores the current state of all titles,
+#     queues, and configurations. Do not edit this file manually while the bot
+#     is running.
+# -   `log.json`: This file contains a persistent history of all major actions
+#     performed by the bot and its users, such as claiming, releasing, and
+#     assigning titles.
