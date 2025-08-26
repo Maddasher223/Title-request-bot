@@ -151,7 +151,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         
         for title_name, title_data in self.state['titles'].items():
             # --- Check 1: Scheduled Events ---
-            if title_data.get('schedule'):
+            if title_data.get('schedule') and title_data['schedule']:
                 next_slot = title_data['schedule'][0]
                 start_time = datetime.fromisoformat(next_slot['start_time'])
                 if now >= start_time:
