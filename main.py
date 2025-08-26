@@ -1,5 +1,5 @@
 # main.py
-# TitleRequest Discord Bot
+# TitleRequest Discord Bot with Flask Web Server for Render hosting
 
 import discord
 from discord.ext import commands, tasks
@@ -8,6 +8,8 @@ import json
 import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
+from flask import Flask
+from threading import Thread
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
@@ -641,8 +643,24 @@ async def on_ready():
         save_state(current_state)
         log_event(None, 'config_change', notes="Initial seeding of default titles.")
 
-if __name__ == "__main__":
-    TOKEN = os.getenv('DISCORD_TOKEN')
-    if not TOKEN:
-        raise ValueError("DISCORD_TOKEN environment variable not set.")
-    bot.run(TOKEN)
+# --- Web Server Setup ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "I'm alive!"
+
+def run():
+  app.run(host='0.0.0.0',port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# --- Final Bot Execution ---
+TOKEN = os.getenv('DISCORD_TOKEN')
+if not TOKEN:
+    raise ValueError("DISCORD_TOKEN environment variable not set.")
+
+keep_alive()
+bot.run(TOKEN)
