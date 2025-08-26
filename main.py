@@ -50,7 +50,7 @@ def initialize_state():
     global state
     state = {
         'titles': {},
-        'users': {},
+        'users': {}, # Kept for reminders, but not for title holding
         'config': {
             'min_hold_duration_hours': 24,
             'announcement_channel': None,
@@ -83,7 +83,7 @@ def log_action(action, user_id, details):
     log_entry = {
         'timestamp': datetime.utcnow().isoformat(),
         'action': action,
-        'user_id': user_id,
+        'user_id': user_id, # Discord user who performed the action
         'details': details
     }
     try:
@@ -131,111 +131,77 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 
     @tasks.loop(minutes=1)
     async def title_check_loop(self):
-        """Periodically checks for expired titles and sends reminders."""
+        """Periodically checks for expired titles."""
         await self.bot.wait_until_ready()
         now = datetime.utcnow()
         
-        # Check for expired titles
         titles_to_release = []
         for title_name, data in state.get('titles', {}).items():
             if data['holder'] and data.get('expiry_date'):
                 expiry = datetime.fromisoformat(data['expiry_date'])
                 if now >= expiry:
-                    titles_to_release.append((title_name, data['holder']))
+                    titles_to_release.append(title_name)
         
-        for title_name, user_id in titles_to_release:
-            guild = self.bot.guilds[0] # Assuming the bot is in one server
-            member = guild.get_member(user_id)
-            user_display = member.display_name if member else f"User ID {user_id}"
-            logger.info(f"Title '{title_name}' expired for {user_display}. Forcing release.")
+        for title_name in titles_to_release:
+            holder_info = state['titles'][title_name]['holder']
+            logger.info(f"Title '{title_name}' expired for {holder_info['name']}. Forcing release.")
             await self.force_release_logic(title_name, self.bot.user.id, "Title expired.")
-
-        # Check for reminders
-        for title_name, data in state.get('titles', {}).items():
-            if data['holder'] and data.get('expiry_date'):
-                expiry = datetime.fromisoformat(data['expiry_date'])
-                user_id = data['holder']
-                reminders_sent = state['users'].setdefault(str(user_id), {}).setdefault('reminders_sent', {})
-                
-                for hours, message in state.get('config', {}).get('reminders', {}).items():
-                    reminder_time = expiry - timedelta(hours=hours)
-                    # Check if it's time to send and if this specific reminder for this title hasn't been sent
-                    if now >= reminder_time and reminders_sent.get(title_name) != hours:
-                        try:
-                            user = await self.bot.fetch_user(user_id)
-                            await user.send(f"**Title Reminder:** {message} (Title: {title_name})")
-                            reminders_sent[title_name] = hours
-                            logger.info(f"Sent {hours}-hour reminder for '{title_name}' to User ID {user_id}.")
-                        except discord.Forbidden:
-                            logger.warning(f"Cannot send reminder DM to User ID {user_id}.")
-                        except discord.NotFound:
-                            logger.warning(f"User ID {user_id} not found for reminder.")
 
         await save_state()
 
     # --- Member Commands ---
 
-    @commands.command(help="Claim a title or see its queue. Usage: !claim <Title Name>")
-    async def claim(self, ctx, *, title_name: str):
-        title_name = title_name.strip()
-        user_id = str(ctx.author.id)
+    @commands.command(help="Claim a title. Usage: !claim <Title Name> | <In-Game Name> | <X:Y Coords>")
+    async def claim(self, ctx, *, args: str):
+        try:
+            title_name, ign, coords = [arg.strip() for arg in args.split('|')]
+        except ValueError:
+            await ctx.send("Invalid format. Use `!claim <Title Name> | <In-Game Name> | <X:Y Coords>`")
+            return
 
         if title_name not in state['titles']:
             await ctx.send(f"Title '{title_name}' does not exist.")
             return
 
-        # Check if user already holds a title
-        if any(t['holder'] == ctx.author.id for t in state['titles'].values()):
-            await ctx.send("You already hold a title. Please release it before claiming another.")
+        # Check if user already holds a title (based on in-game name)
+        if any(t.get('holder') and t['holder']['name'] == ign for t in state['titles'].values()):
+            await ctx.send("You already hold a title. Please have it released before claiming another.")
             return
 
         title = state['titles'][title_name]
         
+        claimant_data = {
+            'name': ign,
+            'coords': coords,
+            'discord_id': ctx.author.id # Store for potential pings
+        }
+
         if not title['holder']:
             # Title is free, but requires guardian approval
-            title['pending_claimant'] = ctx.author.id
+            title['pending_claimant'] = claimant_data
             await save_state()
-            log_action('claim_request', ctx.author.id, {'title': title_name})
+            log_action('claim_request', ctx.author.id, {'title': title_name, 'ign': ign, 'coords': coords})
             
-            # Notify guardians
-            guardian_message = (f"👑 **Title Request:** {ctx.author.mention} has requested to claim the title **'{title_name}'**. "
-                                f"A designated guardian must approve this by using `!assign {title_name} @{ctx.author.display_name}`.")
+            guardian_message = (f"👑 **Title Request:** Player **{ign}** ({coords}) has requested to claim the title **'{title_name}'**. "
+                                f"A designated guardian must approve this by using `!assign {title_name} | {ign}`.")
             
             await self.notify_guardians(ctx.guild, title_name, guardian_message)
-            await ctx.send(f"Your request for '{title_name}' has been submitted. A guardian must approve it.")
+            await ctx.send(f"Your request for '{title_name}' has been submitted for player **{ign}**. A guardian must approve it.")
 
         else:
             # Title is held, join the queue
-            if ctx.author.id in title['queue']:
-                await ctx.send(f"You are already in the queue for '{title_name}'.")
+            if any(q['name'] == ign for q in title['queue']):
+                await ctx.send(f"Player **{ign}** is already in the queue for '{title_name}'.")
             else:
-                title['queue'].append(ctx.author.id)
+                title['queue'].append(claimant_data)
                 await save_state()
-                log_action('queue_join', ctx.author.id, {'title': title_name})
-                await ctx.send(f"You have been added to the queue for '{title_name}'. Position: {len(title['queue'])}")
+                log_action('queue_join', ctx.author.id, {'title': title_name, 'ign': ign})
+                await ctx.send(f"Player **{ign}** has been added to the queue for '{title_name}'. Position: {len(title['queue'])}")
 
-    @commands.command(help="Release a title you currently hold. Usage: !release <Title Name>")
-    async def release(self, ctx, *, title_name: str):
-        title_name = title_name.strip()
-        user_id = ctx.author.id
-
-        if title_name not in state['titles']:
-            await ctx.send(f"Title '{title_name}' does not exist.")
-            return
-
-        title = state['titles'][title_name]
-
-        if title['holder'] != user_id:
-            await ctx.send("You do not hold this title.")
-            return
-
-        await self.release_logic(ctx, title_name, user_id, "User released.")
-        await ctx.send(f"You have released the title '{title_name}'.")
-
-    @commands.command(help="Join the queue for a held title. Usage: !queue <Title Name>")
-    async def queue(self, ctx, *, title_name: str):
-        """Alias for !claim when title is held."""
-        await self.claim(ctx, title_name=title_name)
+    @commands.command(help="Join the queue for a held title. Usage: !queue <Title Name> | <In-Game Name> | <X:Y Coords>")
+    async def queue(self, ctx, *, args: str):
+        """Alias for !claim."""
+        await self.claim(ctx, args=args)
 
     @commands.command(help="List all available titles and their status.")
     async def titles(self, ctx):
@@ -250,16 +216,16 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         for title_name, data in sorted_titles:
             status = ""
             if data['holder']:
-                holder = ctx.guild.get_member(data['holder'])
-                holder_name = holder.display_name if holder else f"Unknown User (ID: {data['holder']})"
+                holder = data['holder']
+                holder_name = f"{holder['name']} ({holder['coords']})"
                 expiry = datetime.fromisoformat(data['expiry_date'])
                 remaining = expiry - datetime.utcnow()
                 status = f"**Held by:** {holder_name}\n*Expires in: {str(timedelta(seconds=int(remaining.total_seconds())))}*"
                 if data['queue']:
                     status += f"\n*Queue: {len(data['queue'])}*"
             elif data.get('pending_claimant'):
-                claimant = ctx.guild.get_member(data['pending_claimant'])
-                claimant_name = claimant.display_name if claimant else "Unknown User"
+                claimant = data['pending_claimant']
+                claimant_name = f"{claimant['name']} ({claimant['coords']})"
                 status = f"**Pending Approval for:** {claimant_name}"
             else:
                 status = "**Status:** Available"
@@ -270,51 +236,21 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             if details:
                 status += "\n" + " | ".join(details)
 
-            embed.add_field(name=f"👑 {title_name}", value=status, inline=False)
+            embed..add_field(name=f"👑 {title_name}", value=status, inline=False)
 
-        await ctx.send(embed=embed)
-
-    @commands.command(help="Show the title you currently hold.")
-    async def mytitle(self, ctx):
-        user_id = ctx.author.id
-        held_title = None
-        for title_name, data in state['titles'].items():
-            if data['holder'] == user_id:
-                held_title = (title_name, data)
-                break
-        
-        if not held_title:
-            await ctx.send("You do not currently hold any titles.")
-            return
-
-        title_name, data = held_title
-        expiry = datetime.fromisoformat(data['expiry_date'])
-        remaining = expiry - datetime.utcnow()
-        
-        embed = discord.Embed(title=f"Your Title: {title_name}", color=discord.Color.green())
-        embed.add_field(name="Expires In", value=str(timedelta(seconds=int(remaining.total_seconds()))))
-        
-        if data.get('icon'):
-            embed.set_thumbnail(url=data['icon'])
-        if data.get('buffs'):
-            embed.add_field(name="Buffs", value=data['buffs'], inline=False)
-            
         await ctx.send(embed=embed)
 
     # --- Helper methods for logic ---
 
-    async def release_logic(self, ctx, title_name, user_id, reason):
+    async def release_logic(self, ctx, title_name, reason):
         """Core logic for releasing a title and processing the queue."""
-        log_action('release', user_id, {'title': title_name, 'reason': reason})
+        holder_info = state['titles'][title_name]['holder']
+        log_action('release', ctx.author.id, {'title': title_name, 'ign': holder_info['name'], 'reason': reason})
         
         state['titles'][title_name]['holder'] = None
         state['titles'][title_name]['claim_date'] = None
         state['titles'][title_name]['expiry_date'] = None
         
-        # Clear any reminders sent for this title for the user
-        if 'reminders_sent' in state['users'].get(str(user_id), {}):
-            state['users'][str(user_id)]['reminders_sent'].pop(title_name, None)
-
         await self.process_queue(ctx, title_name)
         await save_state()
 
@@ -322,44 +258,36 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         """Processes the queue for a title that has just become free."""
         queue = state['titles'][title_name]['queue']
         if not queue:
-            # Announce title is free if no one is in queue
             await self.announce(f"👑 The title **'{title_name}'** is now available!")
             return
 
-        next_in_line_id = None
-        original_queue = list(queue) # Copy for iteration
+        next_in_line_data = None
+        original_queue = list(queue)
         
-        for user_id in original_queue:
-            # Check if the user already holds another title
-            if any(t['holder'] == user_id for t in state['titles'].values()):
-                try:
-                    user = await self.bot.fetch_user(user_id)
-                    await user.send(f"It's your turn for the title '{title_name}', but you already hold another title. Your turn has been skipped.")
-                    logger.info(f"Skipped {user.display_name} in queue for '{title_name}' as they hold another title.")
-                except discord.Forbidden:
-                    logger.warning(f"Could not DM user {user_id} about being skipped in queue.")
-                queue.pop(0) # Remove from the front
+        for user_data in original_queue:
+            # Check if the user (by IGN) already holds another title
+            if any(t.get('holder') and t['holder']['name'] == user_data['name'] for t in state['titles'].values()):
+                logger.info(f"Skipped {user_data['name']} in queue for '{title_name}' as they hold another title.")
+                queue.pop(0)
             else:
-                next_in_line_id = queue.pop(0)
-                break # Found a valid user
+                next_in_line_data = queue.pop(0)
+                break
 
-        if next_in_line_id:
-            state['titles'][title_name]['pending_claimant'] = next_in_line_id
-            user = ctx.guild.get_member(next_in_line_id)
-            user_mention = user.mention if user else f"<@{next_in_line_id}>"
+        if next_in_line_data:
+            state['titles'][title_name]['pending_claimant'] = next_in_line_data
+            user_mention = f"<@{next_in_line_data['discord_id']}>"
             
-            guardian_message = (f"👑 **Next in Queue:** {user_mention}, it's your turn for the title **'{title_name}'**! "
-                                f"A designated guardian must use `!assign {title_name} {user_mention}` to grant it to you.")
+            guardian_message = (f"👑 **Next in Queue:** {user_mention}, it's **{next_in_line_data['name']}'s** turn for the title **'{title_name}'**! "
+                                f"A designated guardian must use `!assign {title_name} | {next_in_line_data['name']}` to grant it.")
             
             await self.notify_guardians(ctx.guild, title_name, guardian_message)
             
-            try: # Also DM the user
-                if user:
-                    await user.send(f"It's your turn for the title '{title_name}'! A guardian has been notified to assign it to you.")
-            except discord.Forbidden:
+            try:
+                user = await self.bot.fetch_user(next_in_line_data['discord_id'])
+                await user.send(f"It's your turn for the title '{title_name}' for player **{next_in_line_data['name']}**! A guardian has been notified.")
+            except (discord.Forbidden, discord.NotFound):
                 pass
         else:
-            # Everyone in the queue already had a title
             await self.announce(f"👑 The title **'{title_name}'** is now available!")
 
     async def force_release_logic(self, title_name, actor_id, reason):
@@ -367,27 +295,22 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         if title_name not in state['titles'] or not state['titles'][title_name]['holder']:
             return
 
-        user_id = state['titles'][title_name]['holder']
-        log_action('force_release', actor_id, {'title': title_name, 'released_user': user_id, 'reason': reason})
+        holder_info = state['titles'][title_name]['holder']
+        log_action('force_release', actor_id, {'title': title_name, 'released_ign': holder_info['name'], 'reason': reason})
 
         state['titles'][title_name]['holder'] = None
         state['titles'][title_name]['claim_date'] = None
         state['titles'][title_name]['expiry_date'] = None
         
-        if 'reminders_sent' in state['users'].get(str(user_id), {}):
-            state['users'][str(user_id)]['reminders_sent'].pop(title_name, None)
-
-        # Need a context-like object to process queue. We can get the guild.
-        guild = self.bot.guilds[0]
-        # We can't send a message to a channel without a context, but we can announce.
-        # The process_queue function needs a ctx, let's adapt it or fake it.
         class FakeContext:
-            def __init__(self, guild):
+            def __init__(self, guild, author_id):
                 self.guild = guild
+                self.author = type('Author', (), {'id': author_id})()
         
-        await self.process_queue(FakeContext(guild), title_name)
+        guild = self.bot.guilds[0]
+        await self.process_queue(FakeContext(guild, actor_id), title_name)
         await save_state()
-        await self.announce(f"👑 The title **'{title_name}'** held by <@{user_id}> has been automatically released. Reason: {reason}")
+        await self.announce(f"👑 The title **'{title_name}'** held by **{holder_info['name']}** has been automatically released. Reason: {reason}")
     
     async def announce(self, message):
         """Sends a message to the configured announcement channel."""
@@ -400,21 +323,19 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                 logger.error(f"Could not send to announcement channel {channel_id}: {e}")
 
     async def notify_guardians(self, guild, title_name, message):
-        """Notifies designated guardians for a title, or all guardians if none are designated."""
+        """Notifies designated guardians for a title."""
         notified_roles = set()
         guardian_titles = state.get('config', {}).get('guardian_titles', {})
         
-        # Find roles specifically for this title
         for role_id_str, titles in guardian_titles.items():
             if title_name in titles:
                 notified_roles.add(int(role_id_str))
 
-        # If no specific guardians, notify all guardian roles
         if not notified_roles:
             notified_roles.update(state.get('config', {}).get('guardian_roles', []))
 
         if not notified_roles:
-            await self.announce(f"⚠️ **Guardian Alert:** No guardian roles configured to handle the request for **'{title_name}'**. An admin should set this up.")
+            await self.announce(f"⚠️ **Guardian Alert:** No guardian roles configured to handle the request for **'{title_name}'**.")
             return
 
         full_message = ""
@@ -425,13 +346,14 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         
         full_message += f"\n{message}"
         await self.announce(full_message)
+
 # main.py - Part 2/3
 
     # --- Guardian and Admin Commands ---
 
-    @commands.command(help="Assign a title to a user. Usage: !assign <Title Name> <@User>")
+    @commands.command(help="Assign a title to a user. Usage: !assign <@User> <Title Name>")
     @commands.check(is_guardian_or_admin)
-    async def assign(self, ctx, title_name: str, member: discord.Member):
+    async def assign(self, ctx, member: discord.Member, *, title_name: str):
         title_name = title_name.strip()
         
         if not is_title_guardian(ctx.author, title_name):
@@ -470,9 +392,9 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         await self.announce(f"🎉 Congratulations {member.mention}! You have been granted the title **'{title_name}'**.")
         await ctx.send(f"Successfully assigned '{title_name}' to {member.display_name}.")
 
-    @commands.command(help="Extend a user's hold on a title. Usage: !snooze <Title Name> <hours>")
+    @commands.command(help="Extend a user's hold on a title. Usage: !snooze <hours> <Title Name>")
     @commands.check(is_guardian_or_admin)
-    async def snooze(self, ctx, title_name: str, hours: int):
+    async def snooze(self, ctx, hours: int, *, title_name: str):
         title_name = title_name.strip()
         
         if not is_title_guardian(ctx.author, title_name):
@@ -526,7 +448,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 
     # --- Admin-Only Commands ---
 
-    @commands.command(help="Import titles from a comma-separated list. Usage: !import_titles <Title1, Title2, ...>")
+    @commands.command(help="Import titles from a comma-separated list. Usage: !import_titles <Title One, Title Two, ...>")
     @commands.has_permissions(administrator=True)
     async def import_titles(self, ctx, *, titles_csv: str):
         titles = [t.strip() for t in titles_csv.split(',')]
@@ -748,10 +670,22 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             await ctx.send("Log file does not exist.")
 
     @commands.command(help="Book a 1-hour time slot for a title. Usage: !schedule <Title Name> <YYYY-MM-DD> <HH:00>")
-    async def schedule(self, ctx, title_name: str, date_str: str, time_str: str):
-        title_name = title_name.strip()
+    async def schedule(self, ctx, *, full_argument: str):
+        parts = full_argument.split()
+        if len(parts) < 3:
+            await ctx.send("Invalid format. Please use: `!schedule <Title Name> <YYYY-MM-DD> <HH:00>`")
+            return
+
+        time_str = parts[-1]
+        date_str = parts[-2]
+        title_name = " ".join(parts[:-2]).strip()
+
+        if not title_name:
+            await ctx.send("Title name cannot be empty. Please use: `!schedule <Title Name> <YYYY-MM-DD> <HH:00>`")
+            return
+
         if title_name not in state['titles']:
-            await ctx.send("Title not found.")
+            await ctx.send(f"Title '{title_name}' not found.")
             return
 
         try:
@@ -783,7 +717,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         log_action('schedule_book', ctx.author.id, {'title': title_name, 'time': schedule_key})
         await save_state()
         await ctx.send(f"Successfully booked '{title_name}' for {date_str} at {time_str} UTC.")
-        
+
 # main.py - Part 3/3
 
 from waitress import serve
