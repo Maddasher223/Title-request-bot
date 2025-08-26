@@ -413,7 +413,9 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         channel_id = state.get('config', {}).get('announcement_channel')
         if channel_id:
             try:
-                await self.bot.get_channel(channel_id).send(message)
+                channel = self.bot.get_channel(channel_id)
+                if channel:
+                    await channel.send(message)
             except (discord.NotFound, discord.Forbidden) as e:
                 logger.error(f"Could not send to announcement channel {channel_id}: {e}")
 
@@ -431,6 +433,10 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 
 # --- Flask Web Server ---
 app = Flask(__name__)
+
+def get_bot_state():
+    """Safely gets a copy of the bot's state for Flask."""
+    return state
 
 @app.route("/")
 def dashboard():
