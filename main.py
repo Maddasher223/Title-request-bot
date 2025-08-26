@@ -350,11 +350,33 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 # main.py - Part 2/3
 
     # --- Guardian and Admin Commands ---
-
-    @commands.command(help="Assign a title to a user. Usage: !assign <@User> <Title Name>")
+    @commands.command(help="Release a title a player currently holds. Usage: !release <Title Name>")
     @commands.check(is_guardian_or_admin)
-    async def assign(self, ctx, member: discord.Member, *, title_name: str):
+    async def release(self, ctx, *, title_name: str):
         title_name = title_name.strip()
+
+        if title_name not in state['titles']:
+            await ctx.send(f"Title '{title_name}' does not exist.")
+            return
+
+        title = state['titles'][title_name]
+
+        if not title['holder']:
+            await ctx.send("This title is not currently held.")
+            return
+
+        holder_name = title['holder']['name']
+        await self.release_logic(ctx, title_name, f"Released by {ctx.author.display_name}")
+        await ctx.send(f"You have released the title '{title_name}' from player **{holder_name}**.")
+
+    @commands.command(help="Assign a title to a user. Usage: !assign <Title Name> | <In-Game Name>")
+    @commands.check(is_guardian_or_admin)
+    async def assign(self, ctx, *, args: str):
+        try:
+            title_name, ign = [arg.strip() for arg in args.split('|')]
+        except ValueError:
+            await ctx.send("Invalid format. Use `!assign <Title Name> | <In-Game Name>`")
+            return
         
         if not is_title_guardian(ctx.author, title_name):
             await ctx.send(f"You are not a designated guardian for the title '{title_name}'.")
@@ -367,30 +389,30 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         title = state['titles'][title_name]
         pending_claimant = title.get('pending_claimant')
 
-        if pending_claimant != member.id:
-            await ctx.send(f"{member.display_name} is not the pending claimant for this title. "
-                           f"The current pending claimant is <@{pending_claimant}>.")
+        if not pending_claimant or pending_claimant['name'] != ign:
+            await ctx.send(f"**{ign}** is not the pending claimant for this title.")
             return
             
         # Check if user already holds a title
-        if any(t['holder'] == member.id for t in state['titles'].values()):
-            await ctx.send(f"{member.display_name} already holds a title. They must release it first.")
+        if any(t.get('holder') and t['holder']['name'] == ign for t in state['titles'].values()):
+            await ctx.send(f"Player **{ign}** already holds a title. They must release it first.")
             return
 
         min_hold_hours = state['config']['min_hold_duration_hours']
         now = datetime.utcnow()
         expiry_date = now + timedelta(hours=min_hold_hours)
 
-        title['holder'] = member.id
+        title['holder'] = pending_claimant
         title['claim_date'] = now.isoformat()
         title['expiry_date'] = expiry_date.isoformat()
         title['pending_claimant'] = None
 
-        log_action('assign', ctx.author.id, {'title': title_name, 'user': member.id})
+        log_action('assign', ctx.author.id, {'title': title_name, 'ign': ign})
         await save_state()
 
-        await self.announce(f"🎉 Congratulations {member.mention}! You have been granted the title **'{title_name}'**.")
-        await ctx.send(f"Successfully assigned '{title_name}' to {member.display_name}.")
+        user_mention = f"<@{title['holder']['discord_id']}>"
+        await self.announce(f"🎉 Congratulations {user_mention}! Player **{ign}** has been granted the title **'{title_name}'**.")
+        await ctx.send(f"Successfully assigned '{title_name}' to player **{ign}**.")
 
     @commands.command(help="Extend a user's hold on a title. Usage: !snooze <hours> <Title Name>")
     @commands.check(is_guardian_or_admin)
@@ -414,12 +436,12 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         new_expiry = expiry + timedelta(hours=hours)
         title['expiry_date'] = new_expiry.isoformat()
 
-        log_action('snooze', ctx.author.id, {'title': title_name, 'user': title['holder'], 'hours': hours})
+        log_action('snooze', ctx.author.id, {'title': title_name, 'ign': title['holder']['name'], 'hours': hours})
         await save_state()
         
-        holder = ctx.guild.get_member(title['holder'])
-        await ctx.send(f"Extended hold for {holder.display_name} on '{title_name}' by {hours} hours.")
-        await self.announce(f"⏰ The hold on **'{title_name}'** for {holder.mention} has been extended by {hours} hours.")
+        holder_info = title['holder']
+        await ctx.send(f"Extended hold for **{holder_info['name']}** on '{title_name}' by {hours} hours.")
+        await self.announce(f"⏰ The hold on **'{title_name}'** for **{holder_info['name']}** has been extended by {hours} hours.")
 
     @commands.command(help="Forcibly remove a title from a user. Usage: !force_release <Title Name>")
     @commands.check(is_guardian_or_admin)
@@ -439,11 +461,11 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             await ctx.send(f"The title '{title_name}' is not currently held.")
             return
             
-        released_user_id = title['holder']
+        released_ign = title['holder']['name']
         reason = f"Forced by {ctx.author.display_name}"
-        await self.release_logic(ctx, title_name, released_user_id, reason)
+        await self.release_logic(ctx, title_name, reason)
         
-        await ctx.send(f"Forcibly released '{title_name}' from <@{released_user_id}>.")
+        await ctx.send(f"Forcibly released '{title_name}' from **{released_ign}**.")
         await self.announce(f"️️️️⚠️ The title **'{title_name}'** has been forcibly released by an admin/guardian.")
 
     # --- Admin-Only Commands ---
@@ -566,7 +588,6 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                 state['titles'][title_name][key] = value
                 details_updated.append(key)
             else:
-                # Silently ignore unknown keys or notify user. Notifying is better.
                 await ctx.send(f"Unknown detail type '{key}'. Use 'icon' or 'buffs'.")
 
         if not details_updated:
@@ -669,19 +690,13 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         else:
             await ctx.send("Log file does not exist.")
 
-    @commands.command(help="Book a 1-hour time slot for a title. Usage: !schedule <Title Name> <YYYY-MM-DD> <HH:00>")
+    @commands.command(help="Book a 1-hour time slot for a title. Usage: !schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>")
     async def schedule(self, ctx, *, full_argument: str):
-        parts = full_argument.split()
-        if len(parts) < 3:
-            await ctx.send("Invalid format. Please use: `!schedule <Title Name> <YYYY-MM-DD> <HH:00>`")
-            return
-
-        time_str = parts[-1]
-        date_str = parts[-2]
-        title_name = " ".join(parts[:-2]).strip()
-
-        if not title_name:
-            await ctx.send("Title name cannot be empty. Please use: `!schedule <Title Name> <YYYY-MM-DD> <HH:00>`")
+        try:
+            parts = [p.strip() for p in full_argument.split('|')]
+            title_name, ign, date_str, time_str = parts
+        except ValueError:
+            await ctx.send("Invalid format. Use `!schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>`")
             return
 
         if title_name not in state['titles']:
@@ -704,19 +719,19 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         schedule_key = schedule_time.isoformat()
 
         if schedule_key in title_schedules:
-            await ctx.send(f"This time slot is already booked by <@{title_schedules[schedule_key]}>.")
+            await ctx.send(f"This time slot is already booked by player **{title_schedules[schedule_key]}**.")
             return
 
-        # Check for user conflicts
+        # Check for user conflicts (by in-game name)
         for schedules in state['schedules'].values():
-            if schedule_key in schedules and schedules[schedule_key] == ctx.author.id:
-                await ctx.send("You have already booked another title for this exact time slot.")
+            if schedule_key in schedules and schedules[schedule_key] == ign:
+                await ctx.send(f"Player **{ign}** has already booked another title for this exact time slot.")
                 return
 
-        title_schedules[schedule_key] = ctx.author.id
-        log_action('schedule_book', ctx.author.id, {'title': title_name, 'time': schedule_key})
+        title_schedules[schedule_key] = ign
+        log_action('schedule_book', ctx.author.id, {'title': title_name, 'time': schedule_key, 'ign': ign})
         await save_state()
-        await ctx.send(f"Successfully booked '{title_name}' for {date_str} at {time_str} UTC.")
+        await ctx.send(f"Successfully booked '{title_name}' for player **{ign}** on {date_str} at {time_str} UTC.")
 
 # main.py - Part 3/3
 
