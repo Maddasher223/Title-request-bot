@@ -618,22 +618,42 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             response += f"\nCould not find the following titles: {', '.join(invalid_titles)}."
         await ctx.send(response)
 
-    @commands.command(help="Set details for a title. Usage: !set_title_details <Title Name> <icon|buffs> <value>")
+    @commands.command(help="Set details for a title. Usage: !set_title_details <Title Name> | icon=<url> | buffs=<text>")
     @commands.has_permissions(administrator=True)
-    async def set_title_details(self, ctx, title_name: str, detail_type: str, *, value: str):
-        title_name = title_name.strip()
-        detail_type = detail_type.lower()
+    async def set_title_details(self, ctx, *, full_argument: str):
+        parts = [p.strip() for p in full_argument.split('|')]
+        if not parts:
+            await ctx.send("Invalid format. Use `!set_title_details <Title Name> | icon=<url> | buffs=<text>`")
+            return
+
+        title_name = parts[0]
         if title_name not in state['titles']:
-            await ctx.send("Title not found.")
+            await ctx.send(f"Title '{title_name}' not found.")
             return
-        if detail_type not in ['icon', 'buffs']:
-            await ctx.send("Invalid detail type. Use 'icon' or 'buffs'.")
-            return
+
+        details_updated = []
+        for part in parts[1:]:
+            if '=' not in part:
+                continue
             
-        state['titles'][title_name][detail_type] = value
-        log_action('set_title_details', ctx.author.id, {'title': title_name, 'detail': detail_type, 'value': value})
+            key, value = part.split('=', 1)
+            key = key.strip().lower()
+            value = value.strip()
+
+            if key in ['icon', 'buffs']:
+                state['titles'][title_name][key] = value
+                details_updated.append(key)
+            else:
+                # Silently ignore unknown keys or notify user. Notifying is better.
+                await ctx.send(f"Unknown detail type '{key}'. Use 'icon' or 'buffs'.")
+
+        if not details_updated:
+            await ctx.send("No valid details provided to update. Use `icon=` or `buffs=`.")
+            return
+
+        log_action('set_title_details', ctx.author.id, {'title': title_name, 'details': details_updated})
         await save_state()
-        await ctx.send(f"Set {detail_type} for '{title_name}'.")
+        await ctx.send(f"Updated {', '.join(details_updated)} for title '{title_name}'.")
 
     @commands.command(help="Add/update a reminder. Usage: !set_reminders <hours> <message>")
     @commands.has_permissions(administrator=True)
@@ -763,6 +783,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         log_action('schedule_book', ctx.author.id, {'title': title_name, 'time': schedule_key})
         await save_state()
         await ctx.send(f"Successfully booked '{title_name}' for {date_str} at {time_str} UTC.")
+        
 # main.py - Part 3/3
 
 from waitress import serve
