@@ -553,7 +553,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         channel_id = state.get('config', {}).get('announcement_channel')
         if channel_id:
             try:
-                channel = self.bot.get_channel(channel_id)
+                channel = await self.bot.fetch_channel(channel_id)
                 if channel:
                     await channel.send(message)
             except (discord.NotFound, discord.Forbidden) as e:
