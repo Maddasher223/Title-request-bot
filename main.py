@@ -309,6 +309,69 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         else:
             await ctx.send("No new titles were added.")
 
+    @commands.command(help="Delete a title permanently. Usage: !delete_title <Title Name>")
+    @commands.has_permissions(administrator=True)
+    async def delete_title(self, ctx, *, title_name: str):
+        title_name = title_name.strip()
+        if title_name in state['titles']:
+            del state['titles'][title_name]
+            for role_id in state['config']['guardian_titles']:
+                if title_name in state['config']['guardian_titles'][role_id]:
+                    state['config']['guardian_titles'][role_id].remove(title_name)
+            log_action('delete_title', ctx.author.id, {'title': title_name})
+            await save_state()
+            await ctx.send(f"Title '{title_name}' has been permanently deleted.")
+        else:
+            await ctx.send("Title not found.")
+
+    @commands.command(help="Set the minimum hold duration for titles. Usage: !set_min_hold <hours>")
+    @commands.has_permissions(administrator=True)
+    async def set_min_hold(self, ctx, hours: int):
+        state['config']['min_hold_duration_hours'] = hours
+        log_action('set_config', ctx.author.id, {'key': 'min_hold_duration_hours', 'value': hours})
+        await save_state()
+        await ctx.send(f"Minimum title hold duration set to {hours} hours.")
+
+    @commands.command(help="Set the channel for bot announcements. Usage: !set_announce <#channel>")
+    @commands.has_permissions(administrator=True)
+    async def set_announce(self, ctx, channel: discord.TextChannel):
+        state['config']['announcement_channel'] = channel.id
+        log_action('set_config', ctx.author.id, {'key': 'announcement_channel', 'value': channel.id})
+        await save_state()
+        await ctx.send(f"Announcement channel set to {channel.mention}.")
+
+    @commands.command(name="set_guardians", help="Set roles that can manage titles. Usage: !set_guardians <@Role1> <@Role2> ...")
+    @commands.has_permissions(administrator=True)
+    async def set_guardians(self, ctx, roles: commands.Greedy[discord.Role]):
+        if not roles:
+            state['config']['guardian_roles'] = []
+            await ctx.send("Guardian roles cleared.")
+        else:
+            role_ids = [role.id for role in roles]
+            state['config']['guardian_roles'] = role_ids
+            log_action('set_config', ctx.author.id, {'key': 'guardian_roles', 'value': role_ids})
+            await ctx.send(f"Guardian roles set to: {', '.join(r.mention for r in roles)}")
+        await save_state()
+
+    @commands.command(name="set_guardian_titles", help="Assign specific titles to a guardian role. Usage: !set_guardian_titles <@Role> <Title1, Title2, ...>")
+    @commands.has_permissions(administrator=True)
+    async def set_guardian_titles(self, ctx, role: discord.Role, *, titles_csv: str):
+        titles = [t.strip() for t in titles_csv.split(',')]
+        valid_titles = []
+        invalid_titles = []
+        for title in titles:
+            if title in state['titles']:
+                valid_titles.append(title)
+            else:
+                invalid_titles.append(title)
+        state['config']['guardian_titles'][str(role.id)] = valid_titles
+        log_action('set_config', ctx.author.id, {'key': 'guardian_titles', 'role': role.id, 'titles': valid_titles})
+        await save_state()
+        response = f"Role {role.mention} is now a guardian for: {', '.join(valid_titles)}."
+        if invalid_titles:
+            response += f"\nCould not find the following titles: {', '.join(invalid_titles)}."
+        await ctx.send(response)
+
     @commands.command(help="Set title details. Usage: !set_title_details <Title Name> | icon=<url> | buffs=<text>")
     @commands.has_permissions(administrator=True)
     async def set_title_details(self, ctx, *, full_argument: str):
@@ -330,6 +393,83 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             await ctx.send(f"Updated {', '.join(details_updated)} for '{title_name}'.")
         else:
             await ctx.send("No valid details provided.")
+
+    @commands.command(help="Add/update a reminder. Usage: !set_reminders <hours> <message>")
+    @commands.has_permissions(administrator=True)
+    async def set_reminders(self, ctx, hours: int, *, message: str):
+        if hours <= 0:
+            await ctx.send("Hours must be a positive number.")
+            return
+        state['config']['reminders'][hours] = message
+        log_action('set_config', ctx.author.id, {'key': 'reminders', 'hours': hours, 'message': message})
+        await save_state()
+        await ctx.send(f"Set reminder for {hours} hours before expiry.")
+
+    @commands.command(help="Show current bot configuration.")
+    @commands.has_permissions(administrator=True)
+    async def config(self, ctx):
+        conf = state['config']
+        min_hold = conf['min_hold_duration_hours']
+        channel_id = conf['announcement_channel']
+        channel = f"<#{channel_id}>" if channel_id else "Not set"
+        guardian_roles = [f"<@&{rid}>" for rid in conf['guardian_roles']] or ["Not set"]
+        embed = discord.Embed(title="Bot Configuration", color=discord.Color.orange())
+        embed.add_field(name="Min Hold Duration", value=f"{min_hold} hours", inline=False)
+        embed.add_field(name="Announcement Channel", value=channel, inline=False)
+        embed.add_field(name="Guardian Roles", value=', '.join(guardian_roles), inline=False)
+        reminders = "\n".join([f"{h}h: {msg}" for h, msg in conf['reminders'].items()]) or "None"
+        embed.add_field(name="Reminders", value=reminders, inline=False)
+        guardian_titles = []
+        for role_id, titles in conf['guardian_titles'].items():
+            guardian_titles.append(f"<@&{role_id}>: {', '.join(titles)}")
+        embed.add_field(name="Title-Specific Guardians", value='\n'.join(guardian_titles) or "None", inline=False)
+        await ctx.send(embed=embed)
+
+    @commands.command(help="Show the last 10 log entries. Usage: !history <@User or Title Name>")
+    async def history(self, ctx, *, query: str):
+        try:
+            member = await commands.MemberConverter().convert(ctx, query)
+            is_user_query = True
+        except commands.MemberNotFound:
+            is_user_query = False
+        if not os.path.exists(LOG_FILE):
+            await ctx.send("Log file not found.")
+            return
+        with open(LOG_FILE, 'r') as f:
+            try:
+                logs = json.load(f)
+            except json.JSONDecodeError:
+                logs = []
+        filtered_logs = []
+        if is_user_query:
+            for log in logs:
+                if log.get('user_id') == member.id:
+                    filtered_logs.append(log)
+            title_text = f"History for {member.display_name}"
+        else:
+            for log in logs:
+                if log.get('details', {}).get('title') == query:
+                    filtered_logs.append(log)
+            title_text = f"History for Title '{query}'"
+        if not filtered_logs:
+            await ctx.send("No history found for that query.")
+            return
+        embed = discord.Embed(title=title_text, color=discord.Color.purple())
+        for log in reversed(filtered_logs[-10:]):
+            ts = datetime.fromisoformat(log['timestamp']).strftime('%Y-%m-%d %H:%M')
+            user = f"<@{log['user_id']}>"
+            action = log['action'].replace('_', ' ').title()
+            details = ', '.join([f"{k}: {v}" for k, v in log['details'].items()])
+            embed.add_field(name=f"[{ts}] {action} by {user}", value=f"```{details}```", inline=False)
+        await ctx.send(embed=embed)
+
+    @commands.command(help="Get the full history file.")
+    @commands.has_permissions(administrator=True)
+    async def fullhistory(self, ctx):
+        if os.path.exists(LOG_FILE):
+            await ctx.send(file=discord.File(LOG_FILE))
+        else:
+            await ctx.send("Log file does not exist.")
 
     @commands.command(help="Book a 3-hour time slot. Usage: !schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>")
     async def schedule(self, ctx, *, full_argument: str):
@@ -696,8 +836,8 @@ async def on_ready():
     Thread(target=run_flask_app, daemon=True).start()
 
 if __name__ == "__main__":
-    discord_token = os.getenv("DISCORD_TOKEN")
-    if not discord_token:
+    bot_token = os.getenv("DISCORD_TOKEN")
+    if not bot_token:
         print("Error: DISCORD_TOKEN environment variable not set.")
     else:
-        bot.run(discord_token)
+        bot.run(bot_token)
