@@ -1087,9 +1087,9 @@ with open('templates/scheduler.html', 'w') as f:
 # --- Final Bot Execution ---
 if __name__ == "__main__":
     # It's recommended to load the token from an environment variable for security
-    bot_token = os.getenv("DISCORD_BOT_TOKEN")
+    bot_token = os.getenv("DISCORD_TOKEN")
     if not bot_token:
-        print("Error: DISCORD_BOT_TOKEN environment variable not set.")
+        print("Error: DISCORD_TOKEN environment variable not set.")
     else:
         bot.run(bot_token)
 
@@ -1104,9 +1104,9 @@ if __name__ == "__main__":
 # 1.  **Set Environment Variable:** Before running, you must set an environment
 #     variable to hold your Discord bot token.
 #
-#     -   On Linux/macOS: `export DISCORD_BOT_TOKEN="YOUR_TOKEN_HERE"`
-#     -   On Windows (Command Prompt): `set DISCORD_BOT_TOKEN="YOUR_TOKEN_HERE"`
-#     -   On Windows (PowerShell): `$env:DISCORD_BOT_TOKEN="YOUR_TOKEN_HERE"`
+#     -   On Linux/macOS: `export DISCORD_TOKEN="YOUR_TOKEN_HERE"`
+#     -   On Windows (Command Prompt): `set DISCORD_TOKEN="YOUR_TOKEN_HERE"`
+#     -   On Windows (PowerShell): `$env:DISCORD_TOKEN="YOUR_TOKEN_HERE"`
 #
 # 2.  **Run the Python script:**
 #
