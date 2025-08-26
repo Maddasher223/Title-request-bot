@@ -45,6 +45,7 @@ def load_state():
                 "min_hold_minutes": 60,
                 "announce_channel_id": None,
                 "guardians": [],
+                "guardian_titles": [],
                 "remind_every_minutes": 15,
                 "max_reminders": 3
             }
@@ -225,12 +226,10 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         if title_name not in self.state['titles']:
             return await ctx.send(f"❌ Title '{title_name}' does not exist.")
         
-        # Check if user is already a holder or in any queue
+        # Check if user already holds any title
         for t_name, t_data in self.state['titles'].items():
             if t_data['holder_id'] == ctx.author.id:
-                return await ctx.send(f"You already hold the **{t_name}** title.")
-            if ctx.author.id in t_data['queue']:
-                return await ctx.send(f"You are already in the queue for the **{t_name}** title.")
+                return await ctx.send(f"You already hold the **{t_name}** title. You must release it before claiming or queuing for another.")
 
         title_data = self.state['titles'][title_name]
 
@@ -243,7 +242,8 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             await ctx.send(f"🎉 Congratulations! You have claimed the **{title_name}** title.")
         else: # Title is held, join queue
             if ctx.author.id in title_data['queue']:
-                 return await ctx.send("You are already in this queue.") # Redundant but safe
+                 return await ctx.send(f"You are already in the queue for the **{title_name}** title.")
+            
             title_data['queue'].append(ctx.author.id)
             position = len(title_data['queue'])
             log_event(title_name, 'queued', previous_holder_id=title_data['holder_id'], new_holder_id=ctx.author.id, queue_snapshot=title_data['queue'])
@@ -509,6 +509,22 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         mention_str = ' '.join([m.mention for m in mentions])
         await ctx.send(f"✅ Guardians set to: {mention_str}")
     
+    @commands.command(name='set_guardian_titles', help='Designate which titles are for guardians.')
+    @commands.has_permissions(manage_roles=True)
+    async def set_guardian_titles(self, ctx, *, title_list: str):
+        """Sets the list of titles to be grouped as 'Guardian Titles' on the dashboard."""
+        guardian_titles = [t.strip().title() for t in title_list.split(',')]
+        
+        # Validate that these titles actually exist
+        for title in guardian_titles:
+            if title not in self.state['titles']:
+                return await ctx.send(f"❌ Error: The title '{title}' does not exist. Please import it first.")
+
+        self.state['config']['guardian_titles'] = guardian_titles
+        log_event(None, 'config_change', notes=f"Guardian titles set to {guardian_titles} by {ctx.author.id}")
+        save_state(self.state)
+        await ctx.send(f"✅ Guardian titles for the dashboard have been set to: **{', '.join(guardian_titles)}**")
+
     @commands.command(name='set_reminders', help='Set reminder frequency and count.')
     @commands.has_permissions(manage_roles=True)
     async def set_reminders(self, ctx, interval_minutes: int, max_count: int):
@@ -524,11 +540,11 @@ class TitleCog(commands.Cog, name="TitleRequest"):
     @commands.has_permissions(manage_roles=True)
     async def import_titles(self, ctx, *, title_list: str):
         """Seeds the bot with titles. Preserves existing state for matching names."""
-        new_titles = [t.strip().title() for t in title_list.split(',')]
+        new_titles = [t.strip().title() for t in title_list.split(',') if t.strip()]
         if not new_titles:
             return await ctx.send("Please provide a comma-separated list of titles.")
         
-        created_count = 0
+        created_titles = []
         for title_name in new_titles:
             if title_name not in self.state['titles']:
                 self.state['titles'][title_name] = {
@@ -540,7 +556,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                     "reminders_sent": 0,
                     "last_notified_at": None,
                 }
-                created_count += 1
+                created_titles.append(title_name)
             
             # Optional: Ensure Discord role exists
             if not discord.utils.get(ctx.guild.roles, name=title_name):
@@ -552,7 +568,10 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 
         log_event(None, 'config_change', notes=f"Titles imported by {ctx.author.id}: {new_titles}")
         save_state(self.state)
-        await ctx.send(f"✅ Titles processed. **{created_count}** new titles were added. Existing titles were preserved.")
+        if created_titles:
+            await ctx.send(f"✅ **{len(created_titles)}** new titles were added: `{', '.join(created_titles)}`. Existing titles were preserved.")
+        else:
+            await ctx.send("✅ All specified titles already exist. No new titles were added.")
 
     @commands.command(name='config', help='Display the current bot configuration.')
     @commands.has_permissions(manage_roles=True)
@@ -577,6 +596,9 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         
         titles_list = ", ".join(self.state['titles'].keys()) or "None"
         embed.add_field(name="Managed Titles", value=titles_list, inline=False)
+
+        guardian_titles_list = ", ".join(cfg.get('guardian_titles', [])) or "None"
+        embed.add_field(name="Guardian Titles (Dashboard)", value=guardian_titles_list, inline=False)
         
         await ctx.send(embed=embed)
 
@@ -652,84 +674,217 @@ app = Flask('')
 @app.route('/')
 def home():
     """Generates the HTML for the live dashboard."""
-    if not bot.is_ready():
-        return "<h1>Bot is still starting up, please refresh in a moment.</h1>", 503
+    if not bot.is_ready() or not bot.guilds:
+        return """
+        <!DOCTYPE html><html><head><title>Bot Status</title><meta http-equiv="refresh" content="10">
+        <style>body{background-color:#121212;color:#e0e0e0;font-family:sans-serif;text-align:center;padding-top:20%;}</style>
+        </head><body><h1>Bot is starting up...</h1><p>The dashboard will be available shortly. This page will refresh automatically.</p></body></html>
+        """, 503
 
-    # Safely get the cog and state
     cog = bot.get_cog('TitleRequest')
     if not cog:
-        return "<h1>Bot cog not loaded.</h1>", 500
+        return "<h1>Error: Bot cog not loaded. Please check the logs.</h1>", 500
     
     state = cog.state
+    guild = bot.guilds[0]
     
-    # Start building the HTML page
-    html = """
+    # --- Data Preparation ---
+    guardian_title_names = state['config'].get('guardian_titles', [])
+    guardian_titles = {}
+    other_titles = {}
+
+    for title_name, data in sorted(state['titles'].items()):
+        if title_name in guardian_title_names:
+            guardian_titles[title_name] = data
+        else:
+            other_titles[title_name] = data
+
+    # --- Log Processing ---
+    log_history = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'r') as f:
+            logs = json.load(f)
+        
+        # Filter for events that represent a title change
+        change_events = [log for log in logs if log['action'] in ('claim', 'ack', 'force_release', 'release')]
+        
+        for log in reversed(change_events[-15:]): # Get last 15 change events
+            ts = datetime.fromisoformat(log['timestamp']).strftime('%b %d, %H:%M UTC')
+            
+            new_holder_name = "N/A"
+            if log['new_holder_id']:
+                member = guild.get_member(log['new_holder_id'])
+                new_holder_name = member.display_name if member else f"ID: {log['new_holder_id']}"
+
+            prev_holder_name = "N/A"
+            if log['previous_holder_id']:
+                 member = guild.get_member(log['previous_holder_id'])
+                 prev_holder_name = member.display_name if member else f"ID: {log['previous_holder_id']}"
+
+            action_map = {
+                'claim': ('CROWNED', '👑'),
+                'ack': ('PASSED', '🤝'),
+                'force_release': ('REMOVED', '🛡️'),
+                'release': ('RELEASED', '🕊️')
+            }
+            action_text, action_icon = action_map.get(log['action'], (log['action'].upper(), ''))
+            
+            log_history.append({
+                "ts": ts,
+                "title": log['title'],
+                "action_icon": action_icon,
+                "action_text": action_text,
+                "new_holder": new_holder_name,
+                "prev_holder": prev_holder_name
+            })
+
+
+    # --- HTML Generation ---
+    def generate_title_cards(title_dict):
+        cards_html = ""
+        if not title_dict:
+            return "<p>No titles in this category.</p>"
+
+        for title_name, data in title_dict.items():
+            status_class, status_text = "", ""
+            if data.get('change_due'):
+                status_class, status_text = "status-due", "CHANGE DUE"
+            elif data['holder_id']:
+                status_class, status_text = "status-held", "HELD"
+            else:
+                status_class, status_text = "status-available", "AVAILABLE"
+
+            holder_html = f'<p class="info-line"><span class="label">Holder:</span> <span class="{status_class}">{status_text}</span></p>'
+            if data['holder_id']:
+                holder = guild.get_member(data['holder_id'])
+                holder_name = holder.display_name if holder else f"User ID: {data['holder_id']}"
+                claimed_at = datetime.fromisoformat(data['claimed_at'])
+                held_for = format_timedelta(datetime.now(timezone.utc) - claimed_at)
+                holder_html = f"""
+                    <p class="info-line"><span class="label">Holder:</span> <span class="{status_class}">{holder_name}</span></p>
+                    <p class="info-line"><span class="label">Held For:</span> {held_for}</p>
+                """
+
+            queue_html = '<p class="queue-empty">The queue is empty.</p>'
+            if data['queue']:
+                queue_items = ""
+                for i, user_id in enumerate(data['queue']):
+                    user = guild.get_member(user_id)
+                    user_name = user.display_name if user else f"User ID: {user_id}"
+                    queue_items += f'<li><span class="queue-pos">{i+1}.</span> {user_name}</li>'
+                queue_html = f'<ol class="queue-list">{queue_items}</ol>'
+
+            cards_html += f"""
+            <div class="card">
+                <div class="card-header">
+                    <h2>{title_name}</h2>
+                    <span class="status-badge {status_class}">{status_text}</span>
+                </div>
+                <div class="card-body">
+                    {holder_html}
+                    <p class="info-line label">Queue:</p>
+                    {queue_html}
+                </div>
+            </div>
+            """
+        return cards_html
+
+    guardian_cards_html = generate_title_cards(guardian_titles)
+    other_cards_html = generate_title_cards(other_titles)
+
+    history_rows_html = ""
+    if log_history:
+        for entry in log_history:
+            history_rows_html += f"""
+            <tr>
+                <td>{entry['ts']}</td>
+                <td>{entry['title']}</td>
+                <td><span class="action-icon">{entry['action_icon']}</span> {entry['action_text']}</td>
+                <td>{entry['new_holder']}</td>
+                <td>{entry['prev_holder']}</td>
+            </tr>
+            """
+    else:
+        history_rows_html = '<tr><td colspan="5">No title change events found.</td></tr>'
+
+
+    # --- Final Page Assembly ---
+    html = f"""
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
         <title>TitleRequest Bot Dashboard</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <meta http-equiv="refresh" content="60">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
         <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 2em; }
-            .container { max-width: 1200px; margin: auto; }
-            h1 { color: #ffffff; border-bottom: 2px solid #333; padding-bottom: 10px; }
-            .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
-            .card { background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
-            .card h2 { margin-top: 0; color: #bb86fc; }
-            .card p { margin: 5px 0; }
-            .card .label { font-weight: bold; color: #a0a0a0; }
-            .card .status-held { color: #03dac6; }
-            .card .status-available { color: #4caf50; }
-            .card .status-due { color: #cf6679; font-weight: bold; }
-            ol { padding-left: 20px; }
-            li { margin-bottom: 5px; }
-            footer { text-align: center; margin-top: 30px; color: #777; font-size: 0.9em; }
+            :root {{
+                --bg-color: #0d1117; --card-bg: #161b22; --border-color: #30363d;
+                --text-primary: #c9d1d9; --text-secondary: #8b949e;
+                --accent-purple: #bb86fc; --accent-green: #3fb950; --accent-blue: #58a6ff; --accent-red: #f85149;
+            }}
+            body {{ 
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
+                background-color: var(--bg-color); color: var(--text-primary); 
+                margin: 0; padding: 2.5em; line-height: 1.6;
+            }}
+            .container {{ max-width: 1400px; margin: auto; }}
+            .header {{ text-align: center; margin-bottom: 2.5em; }}
+            .header h1 {{ font-size: 2.5rem; color: #fff; margin-bottom: 0.2em; }}
+            .header p {{ color: var(--text-secondary); }}
+            .section-title {{ font-size: 1.8rem; color: #fff; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5em; margin-top: 2.5em; margin-bottom: 1em; }}
+            .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 25px; }}
+            .card {{ 
+                background-color: var(--card-bg); border: 1px solid var(--border-color); 
+                border-radius: 8px; transition: transform 0.2s ease, box-shadow 0.2s ease;
+            }}
+            .card:hover {{ transform: translateY(-5px); box-shadow: 0 8px 20px rgba(0,0,0,0.3); }}
+            .card-header {{ display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; border-bottom: 1px solid var(--border-color); }}
+            .card-header h2 {{ margin: 0; font-size: 1.25rem; color: var(--text-primary); }}
+            .status-badge {{ font-size: 0.75rem; font-weight: 700; padding: 4px 8px; border-radius: 12px; }}
+            .status-held {{ background-color: rgba(88, 166, 255, 0.2); color: var(--accent-blue); }}
+            .status-available {{ background-color: rgba(63, 185, 80, 0.2); color: var(--accent-green); }}
+            .status-due {{ background-color: rgba(248, 81, 73, 0.2); color: var(--accent-red); }}
+            .card-body {{ padding: 20px; }}
+            .info-line {{ margin: 0 0 10px 0; color: var(--text-secondary); }}
+            .label {{ font-weight: 500; color: var(--text-primary); }}
+            .queue-list {{ padding-left: 20px; margin: 0; }}
+            .queue-list li {{ margin-bottom: 5px; color: var(--text-secondary); }}
+            .queue-pos {{ font-weight: 700; color: var(--accent-purple); margin-right: 5px; }}
+            .queue-empty {{ color: var(--text-secondary); font-style: italic; }}
+            .history-table {{ width: 100%; border-collapse: collapse; margin-top: 1em; }}
+            .history-table th, .history-table td {{ padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border-color); }}
+            .history-table th {{ font-weight: 700; color: var(--text-primary); }}
+            .history-table td {{ color: var(--text-secondary); }}
+            .action-icon {{ margin-right: 8px; }}
+            footer {{ text-align: center; margin-top: 3em; color: var(--text-secondary); font-size: 0.9em; }}
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>TitleRequest Bot Status</h1>
-            <p><i>Last updated: """ + datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC') + """ (Page auto-refreshes every 60 seconds)</i></p>
-            <div class="grid">
-    """
+            <div class="header">
+                <h1>TitleRequest Bot Dashboard</h1>
+                <p>Last updated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')} (Page auto-refreshes every 60 seconds)</p>
+            </div>
 
-    # Generate a card for each title
-    guild = bot.guilds[0] if bot.guilds else None # Assume the bot is in one server
+            <h2 class="section-title">Guardian Titles</h2>
+            <div class="grid">{guardian_cards_html}</div>
 
-    for title_name, data in sorted(state['titles'].items()):
-        html += '<div class="card">'
-        html += f'<h2>{title_name}</h2>'
+            <h2 class="section-title">Standard Titles</h2>
+            <div class="grid">{other_cards_html}</div>
 
-        # Holder Info
-        if data['holder_id']:
-            holder = guild.get_member(data['holder_id']) if guild else None
-            holder_name = holder.display_name if holder else f"User ID: {data['holder_id']}"
-            claimed_at = datetime.fromisoformat(data['claimed_at'])
-            held_for = format_timedelta(datetime.now(timezone.utc) - claimed_at)
-            
-            status_class = "status-due" if data.get('change_due') else "status-held"
-            html += f'<p><span class="label">Holder:</span> <span class="{status_class}">{holder_name}</span></p>'
-            html += f'<p><span class="label">Held For:</span> {held_for}</p>'
-        else:
-            html += '<p><span class="label">Holder:</span> <span class="status-available">Available</span></p>'
+            <h2 class="section-title">Recent Events</h2>
+            <div class="table-wrapper">
+                <table class="history-table">
+                    <thead><tr><th>Timestamp</th><th>Title</th><th>Action</th><th>New Holder</th><th>Previous Holder</th></tr></thead>
+                    <tbody>{history_rows_html}</tbody>
+                </table>
+            </div>
 
-        # Queue Info
-        html += '<p><span class="label">Queue:</span></p>'
-        if data['queue']:
-            html += '<ol>'
-            for i, user_id in enumerate(data['queue']):
-                user = guild.get_member(user_id) if guild else None
-                user_name = user.display_name if user else f"User ID: {user_id}"
-                html += f'<li>{user_name}</li>'
-            html += '</ol>'
-        else:
-            html += '<p>The queue is empty.</p>'
-
-        html += '</div>' # End Card
-
-    html += """
-            </div> <!-- End Grid -->
-            <footer>Powered by TitleRequest Bot</footer>
+            <footer>Powered by TitleRequest Bot for {guild.name}</footer>
         </div>
     </body>
     </html>
