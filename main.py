@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 from flask import Flask
 from threading import Thread
+import typing # Used for type hinting
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
@@ -496,7 +497,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 
     @commands.command(name='set_guardians', help='Set guardian users or roles.')
     @commands.has_permissions(manage_roles=True)
-    async def set_guardians(self, ctx, *mentions: commands.Greedy[discord.abc.Mentionable]):
+    async def set_guardians(self, ctx, *mentions: commands.Greedy[typing.Union[discord.Member, discord.Role]]):
         if not mentions:
             return await ctx.send("Please mention at least one user or role.")
         guardian_ids = [m.id for m in mentions]
