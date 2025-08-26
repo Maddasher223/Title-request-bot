@@ -11,6 +11,7 @@ import logging
 from flask import Flask
 from threading import Thread
 import typing # Used for type hinting
+import dateutil.parser
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
@@ -149,6 +150,50 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         now = datetime.now(timezone.utc)
         
         for title_name, title_data in self.state['titles'].items():
+            # --- Check 1: Scheduled Events ---
+            if title_data.get('schedule'):
+                next_slot = title_data['schedule'][0]
+                start_time = datetime.fromisoformat(next_slot['start_time'])
+                if now >= start_time:
+                    # A scheduled slot is starting now
+                    scheduled_user_id = next_slot['user_id']
+                    
+                    # Remove from schedule
+                    title_data['schedule'].pop(0)
+
+                    # Insert at the front of the queue
+                    if scheduled_user_id in title_data['queue']:
+                        title_data['queue'].remove(scheduled_user_id)
+                    title_data['queue'].insert(0, scheduled_user_id)
+
+                    # Trigger change due, even if there was a holder
+                    title_data['change_due'] = True
+                    title_data['reminders_sent'] = 0
+                    title_data['last_notified_at'] = now.isoformat()
+                    
+                    log_event(title_name, 'schedule_start', new_holder_id=scheduled_user_id, notes="Scheduled slot started.")
+                    save_state(self.state)
+                    
+                    # Announce it
+                    holder_id = title_data.get('holder_id')
+                    holder = channel.guild.get_member(holder_id) if holder_id else None
+                    next_in_queue = channel.guild.get_member(scheduled_user_id)
+                    
+                    if holder:
+                        await channel.send(
+                            f"**Scheduled Title Change: {title_name}**\n"
+                            f"Current: {holder.mention}'s time is up. → Next (Scheduled): {next_in_queue.mention}.\n"
+                            "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
+                        )
+                    else:
+                         await channel.send(
+                            f"**Scheduled Title Assignment: {title_name}**\n"
+                            f"Assign to: {next_in_queue.mention}.\n"
+                            "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
+                        )
+                    continue # Move to next title
+
+            # --- Check 2: Standard Queue Rotation ---
             if not title_data.get('change_due') and title_data['holder_id'] and title_data['queue']:
                 claimed_at = datetime.fromisoformat(title_data['claimed_at'])
                 min_hold = timedelta(minutes=self.state['config']['min_hold_minutes'])
@@ -156,20 +201,47 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                 snoozed_until = datetime.fromisoformat(snoozed_until_str) if snoozed_until_str else None
 
                 if now >= claimed_at + min_hold and (not snoozed_until or now >= snoozed_until):
-                    title_data['change_due'] = True
-                    title_data['reminders_sent'] = 0
-                    title_data['last_notified_at'] = now.isoformat()
-                    save_state(self.state)
+                    # --- New Logic: Find next eligible user ---
+                    eligible_user_found = False
+                    while title_data['queue'] and not eligible_user_found:
+                        next_user_id = title_data['queue'][0]
+                        
+                        # Check if this user already holds another title
+                        is_holding_another = False
+                        for t_name, t_data in self.state['titles'].items():
+                            if t_data['holder_id'] == next_user_id:
+                                is_holding_another = True
+                                break
+                        
+                        if is_holding_another:
+                            # Skip this user
+                            title_data['queue'].pop(0)
+                            skipped_user = self.bot.get_user(next_user_id)
+                            if skipped_user:
+                                try:
+                                    await skipped_user.send(f"Your turn for the **{title_name}** title was skipped because you currently hold another title.")
+                                except discord.Forbidden:
+                                    pass # Can't DM user
+                            log_event(title_name, 'queue_skip', new_holder_id=next_user_id, notes="User holds another title.")
+                        else:
+                            eligible_user_found = True
 
-                    holder = channel.guild.get_member(title_data['holder_id'])
-                    next_in_queue = channel.guild.get_member(title_data['queue'][0])
-                    await channel.send(
-                        f"**Title Change Due: {title_name}**\n"
-                        f"Current: {holder.mention if holder else 'Unknown User'} → Next: {next_in_queue.mention if next_in_queue else 'Unknown User'}.\n"
-                        "Guardians, please make the change in-game and confirm with `!ack " f"{title_name}`."
-                    )
-                    log_event(title_name, 'due', title_data['holder_id'], title_data['queue'][0], title_data['queue'])
+                    if eligible_user_found:
+                        title_data['change_due'] = True
+                        title_data['reminders_sent'] = 0
+                        title_data['last_notified_at'] = now.isoformat()
+                        save_state(self.state)
+
+                        holder = channel.guild.get_member(title_data['holder_id'])
+                        next_in_queue = channel.guild.get_member(title_data['queue'][0])
+                        await channel.send(
+                            f"**Title Change Due: {title_name}**\n"
+                            f"Current: {holder.mention if holder else 'Unknown User'} → Next: {next_in_queue.mention if next_in_queue else 'Unknown User'}.\n"
+                            "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
+                        )
+                        log_event(title_name, 'due', title_data['holder_id'], title_data['queue'][0], title_data['queue'])
             
+            # --- Check 3: Reminders ---
             if title_data.get('change_due'):
                 last_notified_at = datetime.fromisoformat(title_data.get('last_notified_at', now.isoformat()))
                 remind_interval = timedelta(minutes=self.state['config']['remind_every_minutes'])
@@ -180,14 +252,19 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                     title_data['last_notified_at'] = now.isoformat()
                     save_state(self.state)
 
-                    holder = channel.guild.get_member(title_data['holder_id'])
+                    holder = channel.guild.get_member(title_data.get('holder_id'))
                     next_in_queue = channel.guild.get_member(title_data['queue'][0])
-                    await channel.send(
-                        f"**REMINDER: Title Change Pending for {title_name}**\n"
-                        f"Current: {holder.mention if holder else 'Unknown User'} is still awaiting replacement by {next_in_queue.mention if next_in_queue else 'Unknown User'}.\n"
-                        "Guardians, please use `!ack " f"{title_name}` after updating in-game."
-                    )
-                    log_event(title_name, 'remind', title_data['holder_id'], title_data['queue'][0], title_data['queue'])
+                    
+                    message = ""
+                    if holder:
+                        message = (f"**REMINDER: Title Change Pending for {title_name}**\n"
+                                   f"Current: {holder.mention} is still awaiting replacement by {next_in_queue.mention}.\n")
+                    else:
+                        message = (f"**REMINDER: Title Assignment Pending for {title_name}**\n"
+                                   f"Waiting for {next_in_queue.mention} to be assigned the title.\n")
+
+                    await channel.send(message + "Guardians, please use `!assign " f"{title_name}` after updating in-game.")
+                    log_event(title_name, 'remind', title_data.get('holder_id'), title_data['queue'][0], title_data['queue'])
 
     # --- Helper to manage roles ---
     async def _update_discord_roles(self, guild, old_holder_id, new_holder_id, title_name):
@@ -220,23 +297,33 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         if title_name not in self.state['titles']:
             return await ctx.send(f"❌ Title '{title_name}' does not exist.")
         
-        for t_name, t_data in self.state['titles'].items():
-            if t_data['holder_id'] == ctx.author.id:
-                return await ctx.send(f"You already hold the **{t_name}** title. You must release it before claiming or queuing for another.")
-
         title_data = self.state['titles'][title_name]
 
+        if ctx.author.id in title_data['queue']:
+            return await ctx.send(f"You are already in the queue for the **{title_name}** title.")
+
+        # If title is unheld, add user to queue and trigger guardian flow
         if not title_data['holder_id']:
-            title_data['holder_id'] = ctx.author.id
-            title_data['claimed_at'] = datetime.now(timezone.utc).isoformat()
-            await self._update_discord_roles(ctx.guild, None, ctx.author.id, title_name)
-            log_event(title_name, 'claim', new_holder_id=ctx.author.id, queue_snapshot=title_data['queue'])
-            save_state(self.state)
-            await ctx.send(f"🎉 Congratulations! You have claimed the **{title_name}** title.")
-        else:
-            if ctx.author.id in title_data['queue']:
-                 return await ctx.send(f"You are already in the queue for the **{title_name}** title.")
+            title_data['queue'].insert(0, ctx.author.id) # Add to front of queue
+            title_data['change_due'] = True
+            title_data['reminders_sent'] = 0
+            title_data['last_notified_at'] = datetime.now(timezone.utc).isoformat()
             
+            log_event(title_name, 'queued', new_holder_id=ctx.author.id, queue_snapshot=title_data['queue'], notes="Claimed unheld title, pending assignment.")
+            save_state(self.state)
+
+            announce_channel = self.bot.get_channel(self.state['config']['announce_channel_id'])
+            if announce_channel:
+                next_in_queue = ctx.guild.get_member(ctx.author.id)
+                await announce_channel.send(
+                    f"**Title Assignment Due: {title_name}**\n"
+                    f"Assign to: {next_in_queue.mention if next_in_queue else 'Unknown User'}.\n"
+                    "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
+                )
+            await ctx.send(f"👍 You have claimed the unheld **{title_name}** title. Guardians have been notified to assign it to you.")
+
+        # If title is held, add to back of queue
+        else:
             title_data['queue'].append(ctx.author.id)
             position = len(title_data['queue'])
             log_event(title_name, 'queued', previous_holder_id=title_data['holder_id'], new_holder_id=ctx.author.id, queue_snapshot=title_data['queue'])
@@ -285,7 +372,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                 await announce_channel.send(
                     f"**Title Change Due: {held_title_name}** (Holder Released)\n"
                     f"Current: {holder.mention if holder else 'Unknown User'} → Next: {next_in_queue.mention if next_in_queue else 'Unknown User'}.\n"
-                    "Guardians, please make the change in-game and confirm with `!ack " f"{held_title_name}`."
+                    "Guardians, please make the change in-game and confirm with `!assign " f"{held_title_name}`."
                 )
             await ctx.send(f"✅ You have released **{held_title_name}**. Guardians have been notified to assign it to the next person in the queue.")
 
@@ -371,18 +458,18 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 
     # --- Guardian & Admin Commands ---
 
-    @commands.command(name='ack', help='Acknowledge a title change (Guardians only).')
+    @commands.command(name='assign', help='Assign a title to the next person in queue (Guardians only).')
     @commands.check(is_guardian_or_admin)
-    async def ack(self, ctx, *, title_name: str):
+    async def assign(self, ctx, *, title_name: str):
         title_name = title_name.title()
         if title_name not in self.state['titles']:
             return await ctx.send(f"❌ Title '{title_name}' does not exist.")
 
         title_data = self.state['titles'][title_name]
         if not title_data.get('change_due'):
-            return await ctx.send(f"There is no pending change for **{title_name}** to acknowledge.")
+            return await ctx.send(f"There is no pending assignment for **{title_name}**.")
         if not title_data['queue']:
-            return await ctx.send(f"Cannot acknowledge: the queue for **{title_name}** is empty.")
+            return await ctx.send(f"Cannot assign: the queue for **{title_name}** is empty.")
 
         old_holder_id = title_data['holder_id']
         new_holder_id = title_data['queue'].pop(0)
@@ -395,11 +482,11 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         
         await self._update_discord_roles(ctx.guild, old_holder_id, new_holder_id, title_name)
         
-        log_event(title_name, 'ack', old_holder_id, new_holder_id, title_data['queue'], f"Acknowledged by {ctx.author.id}")
+        log_event(title_name, 'assign', old_holder_id, new_holder_id, title_data['queue'], f"Assigned by {ctx.author.id}")
         save_state(self.state)
 
         new_holder = ctx.guild.get_member(new_holder_id)
-        confirmation_msg = f"✅ Confirmed: The **{title_name}** title has been passed to {new_holder.mention if new_holder else 'Unknown User'}!"
+        confirmation_msg = f"✅ Confirmed: The **{title_name}** title has been assigned to {new_holder.mention if new_holder else 'Unknown User'}!"
         
         await ctx.send(confirmation_msg)
         announce_channel = self.bot.get_channel(self.state['config']['announce_channel_id'])
@@ -457,7 +544,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                 await announce_channel.send(
                     f"**Title Change Due: {title_name}** (Forced Release)\n"
                     f"Current: {holder.mention if holder else 'Unknown User'} → Next: {next_in_queue.mention if next_in_queue else 'Unknown User'}.\n"
-                    "Guardians, please make the change in-game and confirm with `!ack " f"{title_name}`."
+                    "Guardians, please make the change in-game and confirm with `!assign " f"{title_name}`."
                 )
             await ctx.send(f"✅ The **{title_name}** holder has been removed. Guardians have been notified to assign it to the next in queue.")
 
@@ -579,15 +666,9 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         for title_name in new_titles:
             if title_name not in self.state['titles']:
                 self.state['titles'][title_name] = {
-                    "holder_id": None,
-                    "claimed_at": None,
-                    "queue": [],
-                    "change_due": False,
-                    "snoozed_until": None,
-                    "reminders_sent": 0,
-                    "last_notified_at": None,
-                    "icon_url": None,
-                    "description": None
+                    "holder_id": None, "claimed_at": None, "queue": [], "schedule": [], "change_due": False,
+                    "snoozed_until": None, "reminders_sent": 0, "last_notified_at": None,
+                    "icon_url": None, "description": None
                 }
                 created_titles.append(title_name)
             
@@ -689,7 +770,7 @@ async def on_ready():
         logging.info("No titles found in state. Seeding with defaults.")
         for title_name in DEFAULT_TITLES:
             current_state['titles'][title_name] = {
-                "holder_id": None, "claimed_at": None, "queue": [], "change_due": False,
+                "holder_id": None, "claimed_at": None, "queue": [], "schedule": [], "change_due": False,
                 "snoozed_until": None, "reminders_sent": 0, "last_notified_at": None,
                 "icon_url": None, "description": None
             }
@@ -730,7 +811,7 @@ def home():
         with open(LOG_FILE, 'r') as f:
             logs = json.load(f)
         
-        change_events = [log for log in logs if log['action'] in ('claim', 'ack', 'force_release', 'release')]
+        change_events = [log for log in logs if log['action'] in ('claim', 'assign', 'force_release', 'release')]
         
         for log in reversed(change_events[-15:]):
             ts = datetime.fromisoformat(log['timestamp']).strftime('%b %d, %H:%M UTC')
@@ -746,7 +827,7 @@ def home():
                  prev_holder_name = member.display_name if member else f"ID: {log['previous_holder_id']}"
 
             action_map = {
-                'claim': ('CROWNED', '👑'), 'ack': ('PASSED', '🤝'),
+                'claim': ('CROWNED', '👑'), 'assign': ('PASSED', '🤝'),
                 'force_release': ('REMOVED', '🛡️'), 'release': ('RELEASED', '🕊️')
             }
             action_text, action_icon = action_map.get(log['action'], (log['action'].upper(), ''))
@@ -764,7 +845,7 @@ def home():
         for title_name, data in title_dict.items():
             status_class, status_text = "", ""
             if data.get('change_due'):
-                status_class, status_text = "status-due", "CHANGE DUE"
+                status_class, status_text = "status-due", "ASSIGNMENT DUE"
             elif data['holder_id']:
                 status_class, status_text = "status-held", "HELD"
             else:
