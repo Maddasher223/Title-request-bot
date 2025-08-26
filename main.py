@@ -474,6 +474,51 @@ def scheduler():
     schedules = bot_state.get('schedules', {})
     return render_template('scheduler.html', days=days, hours=hours, titles=title_names, schedules=schedules)
 
+@app.route("/request-title", methods=['POST'])
+def request_title():
+    """Handles the web form for requesting a title."""
+    title_name = request.form.get('title_name')
+    ign = request.form.get('ign')
+    coords = request.form.get('coords')
+    
+    if not all([title_name, ign, coords]):
+        return "Missing form data.", 400
+
+    logger.info(f"Web request received for title '{title_name}' by player '{ign}'.")
+    log_action('web_claim_request', 0, {'title': title_name, 'ign': ign, 'coords': coords, 'source': 'web_form'})
+    
+    return redirect(url_for('dashboard'))
+
+@app.route("/book-slot", methods=['POST'])
+def book_slot():
+    """Handles booking a time slot from the web scheduler."""
+    title_name = request.form.get('title')
+    date_str = request.form.get('date')
+    time_str = request.form.get('time')
+    ign = request.form.get('ign')
+    coords = request.form.get('coords')
+
+    if not all([title_name, date_str, time_str, ign, coords]):
+        return "Missing data for booking.", 400
+        
+    try:
+        schedule_time = datetime.fromisoformat(f"{date_str}T{time_str}")
+    except (ValueError, TypeError):
+        return "Invalid data format.", 400
+
+    async def do_booking():
+        async with state_lock:
+            title_schedules = state['schedules'].setdefault(title_name, {})
+            schedule_key = schedule_time.isoformat()
+            if schedule_key not in title_schedules:
+                title_schedules[schedule_key] = ign 
+                log_action('schedule_book_web', 0, {'title': title_name, 'time': schedule_key, 'ign': ign})
+                await save_state()
+    
+    bot.loop.call_soon_threadsafe(asyncio.create_task, do_booking())
+    
+    return redirect(url_for('scheduler'))
+
 def run_flask_app():
     serve(app, host='0.0.0.0', port=8080)
 
@@ -483,25 +528,75 @@ with open('templates/dashboard.html', 'w') as f:
     f.write("""
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>TitleRequest Dashboard</title></head>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TitleRequest Dashboard</title>
+    <style>
+        body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
+        h1, h2 { color: #ffffff; }
+        .container { max-width: 1200px; margin: auto; }
+        .title-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+        .title-card { background-color: #2f3136; border-radius: 8px; padding: 20px; border-left: 5px solid #7289da; }
+        .title-card h3 { margin-top: 0; display: flex; align-items: center; }
+        .title-card img { width: 24px; height: 24px; margin-right: 10px; border-radius: 50%; }
+        .title-card p { margin: 5px 0; }
+        .title-card strong { color: #ffffff; }
+        .queue { list-style: none; padding-left: 0; }
+        .queue li { background-color: #40444b; padding: 5px 10px; border-radius: 4px; margin-top: 5px; }
+        .form-card { background-color: #2f3136; padding: 20px; border-radius: 8px; margin-top: 2em; }
+        input, select, button { width: 100%; padding: 10px; margin-top: 10px; border-radius: 4px; border: 1px solid #202225; background-color: #40444b; color: #dcddde; box-sizing: border-box; }
+        button { background-color: #7289da; cursor: pointer; font-weight: bold; }
+        label { display: block; margin-top: 1em; }
+    </style>
+</head>
 <body>
-    <h1>👑 TitleRequest Dashboard</h1>
-    <a href="/scheduler">View Scheduler</a>
-    {% for title in titles %}
-        <div>
-            <h3>{{ title.name }}</h3>
-            <p><strong>Holder:</strong> {{ title.holder }}</p>
-            <p><strong>Expires In:</strong> {{ title.expires_in }}</p>
-            {% if title.queue %}<h4>Queue:</h4><ul>{% for user in title.queue %}<li>{{ user }}</li>{% endfor %}</ul>{% endif %}
+    <div class="container">
+        <h1>👑 TitleRequest Dashboard</h1>
+        <p>Live status of all server titles. <a href="/scheduler">View Scheduler</a></p>
+        <div class="title-grid">
+            {% for title in titles %}
+            <div class="title-card">
+                <h3>
+                    {% if title.icon %}<img src="{{ title.icon }}" alt="icon">{% endif %}
+                    {{ title.name }}
+                </h3>
+                <p><strong>Status:</strong> 
+                    {% if title.holder != 'None' %} Held
+                    {% elif title.pending != 'None' %} Pending Approval
+                    {% else %} Available
+                    {% endif %}
+                </p>
+                <p><strong>Holder:</strong> {{ title.holder }}</p>
+                <p><strong>Expires In:</strong> {{ title.expires_in }}</p>
+                {% if title.buffs %}<p><strong>Buffs:</strong> {{ title.buffs }}</p>{% endif %}
+                {% if title.queue %}
+                <h4>Queue:</h4>
+                <ul class="queue">
+                    {% for user in title.queue %}
+                    <li>{{ user }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+            {% endfor %}
         </div>
-    {% endfor %}
-    <h2>Request a Title</h2>
-    <form action="/request-title" method="POST">
-        <select name="title_name" required>{% for title in titles %}<option value="{{ title.name }}">{{ title.name }}</option>{% endfor %}</select>
-        <input type="text" name="ign" placeholder="In-Game Name" required>
-        <input type="text" name="coords" placeholder="X:Y Coordinates" required>
-        <button type="submit">Submit</button>
-    </form>
+
+        <div class="form-card">
+            <h2>Request a Title</h2>
+            <form action="/request-title" method="POST">
+                <label for="title_name">Title Name:</label>
+                <select id="title_name" name="title_name" required>
+                    {% for title in titles %}<option value="{{ title.name }}">{{ title.name }}</option>{% endfor %}
+                </select>
+                <label for="ign">In-Game Name:</label>
+                <input type="text" id="ign" name="ign" placeholder="Enter your In-Game Name" required>
+                <label for="coords">X:Y Coordinates:</label>
+                <input type="text" id="coords" name="coords" placeholder="e.g., 123:456" required>
+                <button type="submit">Submit Request</button>
+            </form>
+        </div>
+    </div>
 </body>
 </html>
 """)
@@ -509,38 +604,86 @@ with open('templates/scheduler.html', 'w') as f:
     f.write("""
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>Title Scheduler</title></head>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Title Scheduler</title>
+    <style>
+        body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
+        h1 { color: #ffffff; }
+        .container { max-width: 1400px; margin: auto; }
+        .calendar-view { overflow-x: auto; }
+        table { border-collapse: collapse; width: 100%; margin-top: 1em; }
+        th, td { border: 1px solid #40444b; padding: 8px; text-align: center; min-width: 120px; }
+        th { background-color: #2f3136; }
+        .time-header { min-width: 80px; }
+        .booked { background-color: #f04747; color: white; font-size: 0.8em; }
+        .form-card { background-color: #2f3136; padding: 20px; border-radius: 8px; margin-top: 2em; }
+        input, select, button { width: 100%; padding: 10px; margin-top: 10px; border-radius: 4px; border: 1px solid #202225; background-color: #40444b; color: #dcddde; box-sizing: border-box; }
+        button { background-color: #7289da; cursor: pointer; font-weight: bold; }
+        label { display: block; margin-top: 1em; }
+    </style>
+</head>
 <body>
-    <h1>🗓️ Title Scheduler</h1>
-    <a href="/">Back to Dashboard</a>
-    <h2>Book a Slot</h2>
-    <form action="/book-slot" method="POST">
-        <select name="title" required>{% for title in titles %}<option value="{{ title }}">{{ title }}</option>{% endfor %}</select>
-        <input type="date" name="date" required>
-        <select name="time" required>{% for hour in hours %}<option value="{{ hour }}">{{ hour }}</option>{% endfor %}</select>
-        <input type="text" name="ign" placeholder="In-Game Name" required>
-        <input type="text" name="coords" placeholder="X:Y Coordinates" required>
-        <button type="submit">Book</button>
-    </form>
-    <h2>Upcoming Schedule</h2>
-    <table>
-        <thead><tr><th>Time (UTC)</th>{% for day in days %}<th>{{ day.strftime('%A %Y-%m-%d') }}</th>{% endfor %}</tr></thead>
-        <tbody>
-            {% for hour in hours %}
-            <tr>
-                <td>{{ hour }}</td>
-                {% for day in days %}
-                <td>
-                    {% for title_name, schedule_data in schedules.items() %}
-                        {% set slot_time = day.strftime('%Y-%m-%d') + 'T' + hour + ':00' %}
-                        {% if schedule_data[slot_time] %}<div><strong>{{ title_name }}</strong><br>{{ schedule_data[slot_time] }}</div>{% endif %}
+    <div class="container">
+        <h1>🗓️ Title Scheduler</h1>
+        <p>Book a 3-hour time slot for a title. All times are in UTC. <a href="/">Back to Dashboard</a></p>
+        
+        <div class="form-card">
+            <h2>Book a Slot</h2>
+            <form action="/book-slot" method="POST">
+                <label for="title">Title:</label>
+                <select id="title" name="title" required>
+                    {% for title in titles %}<option value="{{ title }}">{{ title }}</option>{% endfor %}
+                </select>
+                <label for="date">Date:</label>
+                <input type="date" id="date" name="date" required>
+                <label for="time">Time (UTC, 3-hour slots):</label>
+                <select id="time" name="time" required>
+                    {% for hour in hours %}<option value="{{ hour }}">{{ hour }}</option>{% endfor %}
+                </select>
+                <label for="ign_book">In-Game Name:</label>
+                <input type="text" id="ign_book" name="ign" placeholder="Enter your In-Game Name" required>
+                <label for="coords_book">X:Y Coordinates:</label>
+                <input type="text" id="coords_book" name="coords" placeholder="e.g., 123:456" required>
+                <button type="submit">Book Slot</button>
+            </form>
+        </div>
+
+        <h2>Upcoming Week Schedule</h2>
+        <div class="calendar-view">
+            <table>
+                <thead>
+                    <tr>
+                        <th class="time-header">Time (UTC)</th>
+                        {% for day in days %}
+                        <th>{{ day.strftime('%A') }}<br>{{ day.strftime('%Y-%m-%d') }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for hour in hours %}
+                    <tr>
+                        <td class="time-header">{{ hour }}</td>
+                        {% for day in days %}
+                        <td>
+                            {% for title_name, schedule_data in schedules.items() %}
+                                {% set slot_time = day.strftime('%Y-%m-%d') + 'T' + hour + ':00' %}
+                                {% if schedule_data[slot_time] %}
+                                    <div class="booked">
+                                        <strong>{{ title_name }}</strong><br>
+                                        {{ schedule_data[slot_time] }}
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        </td>
+                        {% endfor %}
+                    </tr>
                     {% endfor %}
-                </td>
-                {% endfor %}
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+                </tbody>
+            </table>
+        </div>
+    </div>
 </body>
 </html>
 """)
@@ -557,4 +700,4 @@ if __name__ == "__main__":
     if not bot_token:
         print("Error: DISCORD_TOKEN environment variable not set.")
     else:
-        bot.run(bot_token)
+        bot.run(discord_token)
