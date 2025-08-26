@@ -479,6 +479,27 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 
         save_state(self.state)
 
+    @commands.command(name='delete_title', help='Deletes a title from the bot (Admins only).')
+    @commands.has_permissions(manage_roles=True)
+    async def delete_title(self, ctx, *, title_name: str):
+        """Permanently deletes a title from the bot's management."""
+        title_name = title_name.title()
+        if title_name not in self.state['titles']:
+            return await ctx.send(f"❌ Title '{title_name}' does not exist.")
+
+        # Remove from main titles dict
+        del self.state['titles'][title_name]
+
+        # Remove from guardian titles list if it's there
+        if 'guardian_titles' in self.state['config'] and title_name in self.state['config']['guardian_titles']:
+            self.state['config']['guardian_titles'].remove(title_name)
+
+        log_event(title_name, 'delete', notes=f"Title deleted by {ctx.author.id}")
+        save_state(self.state)
+
+        await ctx.send(f"✅ The title **{title_name}** has been permanently deleted from the bot.")
+
+
     @commands.command(name='set_min_hold', help='Set the minimum hold time in minutes.')
     @commands.has_permissions(manage_roles=True)
     async def set_min_hold(self, ctx, minutes: int):
@@ -855,8 +876,9 @@ def home():
             .queue-list li {{ margin-bottom: 5px; color: var(--text-secondary); }}
             .queue-pos {{ font-weight: 700; color: var(--accent-purple); margin-right: 5px; }}
             .queue-empty {{ color: var(--text-secondary); font-style: italic; }}
+            .table-wrapper {{ overflow-x: auto; }}
             .history-table {{ width: 100%; border-collapse: collapse; margin-top: 1em; }}
-            .history-table th, .history-table td {{ padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border-color); }}
+            .history-table th, .history-table td {{ padding: 12px 15px; text-align: left; border-bottom: 1px solid var(--border-color); white-space: nowrap; }}
             .history-table th {{ font-weight: 700; color: var(--text-primary); }}
             .history-table td {{ color: var(--text-secondary); }}
             .action-icon {{ margin-right: 8px; }}
