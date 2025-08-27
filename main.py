@@ -1,4 +1,4 @@
-# main.py - COMPLETE & FIXED
+# main.py — COMPLETE & FIXED
 
 import os
 import csv
@@ -13,7 +13,6 @@ from waitress import serve
 
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
 
 # ========= UTC helpers =========
 UTC = timezone.utc
@@ -27,6 +26,28 @@ def parse_iso_utc(s: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt
+
+def iso_slot_key_naive(dt: datetime) -> str:
+    """
+    Produce the normalized slot key we use everywhere in schedules:
+    'YYYY-MM-DDTHH:MM:SS' with NO timezone (naive), seconds forced to :00.
+    """
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
+    return dt.replace(second=0, microsecond=0).isoformat()
+
+def normalize_iso_slot_string(s: str) -> str:
+    """
+    Accept a stored slot string in any of these forms:
+      - naive 'YYYY-MM-DDTHH:MM[:SS]'
+      - TZ-aware 'YYYY-MM-DDTHH:MM[:SS]+00:00'
+    Return normalized naive 'YYYY-MM-DDTHH:MM:00'.
+    """
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return s  # best effort; shouldn't happen
+    return iso_slot_key_naive(dt)
 
 SHIFT_HOURS = 3
 
@@ -162,7 +183,7 @@ async def initialize_titles():
             state['titles'][title_name]['buffs'] = details['effects']
     await save_state()
 
-# ========= Rebuild schedules from log on restart =========
+# ========= Rebuild schedules from log on restart (normalize keys) =========
 async def rebuild_schedules_from_log():
     try:
         if not os.path.exists(LOG_FILE):
@@ -186,8 +207,10 @@ async def rebuild_schedules_from_log():
                 continue
             if title_name not in TITLES_CATALOG:
                 continue
+            # normalize whatever was saved to our canonical naive key
+            norm_key = normalize_iso_slot_string(iso_time)
             schedules_for_title = state['schedules'].setdefault(title_name, {})
-            schedules_for_title.setdefault(iso_time, ign)
+            schedules_for_title.setdefault(norm_key, ign)
 
         await save_state()
     except Exception as e:
@@ -297,7 +320,8 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             for iso_time, ign in schedule_data.items():
                 if iso_time in state['sent_reminders']:
                     continue
-                shift_time = parse_iso_utc(iso_time)
+                shift_time = parse_iso_utc(iso_time) if ("+" in iso_time) else parse_iso_utc(iso_time + "+00:00") if len(iso_time) == 19 else parse_iso_utc(iso_time)
+                # (The above tolerates both naive and tz-aware strings.)
                 reminder_time = shift_time - timedelta(minutes=5)
                 if reminder_time <= now < shift_time:
                     try:
@@ -438,8 +462,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             await ctx.send(f"Title '{title_name}' not found.")
             return
         try:
-            schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-            schedule_time = schedule_time.replace(tzinfo=UTC)
+            schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
             if schedule_time.minute != 0 or schedule_time.hour % 3 != 0:
                 raise ValueError
         except ValueError:
@@ -450,7 +473,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             return
 
         # enforce: a person can’t hold multiple titles at the same exact slot
-        schedule_key = schedule_time.replace(second=0, microsecond=0).isoformat()
+        schedule_key = iso_slot_key_naive(schedule_time)
         for t_name, t_sched in state.get('schedules', {}).items():
             if schedule_key in t_sched and t_sched[schedule_key] == ign:
                 await ctx.send(f"**{ign}** has already booked **{t_name}** for this slot.")
@@ -612,10 +635,10 @@ def book_slot():
     async def do_booking():
         async with state_lock:
             # enforce: a person can’t hold multiple titles at the same exact slot
-            schedule_key = schedule_time.replace(second=0, microsecond=0).isoformat()
+            schedule_key = iso_slot_key_naive(schedule_time)
             for t_name, t_sched in state.get('schedules', {}).items():
                 if schedule_key in t_sched and t_sched[schedule_key] == ign:
-                    # silently ignore double-book attempts via web; you could also flash a message
+                    # silently ignore double-book via web
                     return
 
             schedules = state['schedules'].setdefault(title_name, {})
@@ -750,7 +773,7 @@ with open('templates/dashboard.html', 'w') as f:
                         {% for day in days %}
                         <td>
                             {% for title_name, schedule_data in schedules.items() %}
-                                {# we save ISO keys like 2025-08-30T09:00:00 #}
+                                {# Our keys are naive ISO like 2025-09-01T12:00:00 #}
                                 {% set slot_time = day.strftime('%Y-%m-%d') ~ 'T' ~ hour ~ ':00' %}
                                 {% set who = schedule_data.get(slot_time) %}
                                 {% if who %}
@@ -829,15 +852,13 @@ async def on_ready():
 
     await bot.add_cog(TitleCog(bot))
     try:
-        await bot.tree.sync()  # harmless even if no slash commands
+        # Safe even if you didn't define slash commands
+        await bot.tree.sync()
     except Exception as e:
         logger.error(f"Slash sync failed: {e}")
 
     logger.info(f'{bot.user.name} has connected!')
     Thread(target=run_flask_app, daemon=True).start()
-
-def run_flask_app():
-    serve(app, host='0.0.0.0', port=8080)
 
 # ========= Entry =========
 if __name__ == "__main__":
