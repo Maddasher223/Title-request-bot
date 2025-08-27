@@ -8,14 +8,15 @@ import asyncio
 import requests
 from threading import Thread
 from datetime import datetime, timedelta, timezone
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, flash
 from waitress import serve
 
 import discord
 from discord.ext import commands, tasks
 
-# ========= UTC helpers =========
+# ========= UTC helpers & constants =========
 UTC = timezone.utc
+SHIFT_HOURS = 3  # 3-hour reservation/assignment windows
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
@@ -46,10 +47,8 @@ def normalize_iso_slot_string(s: str) -> str:
     try:
         dt = datetime.fromisoformat(s)
     except Exception:
-        return s  # best effort; shouldn't happen
+        return s  # best effort
     return iso_slot_key_naive(dt)
-
-SHIFT_HOURS = 3
 
 def in_current_slot(slot_start: datetime) -> bool:
     """Is now within [slot_start, slot_start+3h)?"""
@@ -57,6 +56,32 @@ def in_current_slot(slot_start: datetime) -> bool:
         slot_start = slot_start.replace(tzinfo=UTC)
     end = slot_start + timedelta(hours=SHIFT_HOURS)
     return slot_start <= now_utc() < end
+
+def normalize_slot_key(slot_key: str) -> str:
+    return slot_key.strip()
+
+def slot_is_reserved(title_name: str, slot_key: str) -> bool:
+    slot_key = normalize_slot_key(slot_key)
+    return slot_key in state.get('schedules', {}).get(title_name, {})
+
+def reserve_slot(title_name: str, slot_key: str, reserver_ign: str) -> bool:
+    """Write a future reservation if not already taken."""
+    slot_key = normalize_slot_key(slot_key)
+    schedules = state.setdefault('schedules', {}).setdefault(title_name, {})
+    if slot_key in schedules:
+        return False
+    schedules[slot_key] = reserver_ign
+    return True
+
+def can_book_slot(title_name: str, slot_start_dt: datetime) -> tuple[bool, str]:
+    """
+    Returns (ok, message). A slot is bookable only if it's not already reserved.
+    """
+    slot_key = iso_slot_key_naive(slot_start_dt)
+    if slot_is_reserved(title_name, slot_key):
+        reserver = state['schedules'][title_name][slot_key]
+        return (False, f"That slot is already reserved by {reserver}.")
+    return (True, "OK")
 
 def title_is_vacant_now(title_name: str) -> bool:
     t = state.get('titles', {}).get(title_name, {})
@@ -119,7 +144,14 @@ logger = logging.getLogger(__name__)
 # ========= Helper: state & logs =========
 def initialize_state():
     global state
-    state = {'titles': {}, 'users': {}, 'config': {}, 'schedules': {}, 'sent_reminders': []}
+    state = {
+        'titles': {},
+        'users': {},
+        'config': {},
+        'schedules': {},
+        'sent_reminders': [],
+        'activated_slots': {}   # remember which reservations we already auto-assigned
+    }
 
 async def load_state():
     global state
@@ -141,6 +173,16 @@ async def save_state():
                 json.dump(state, f, indent=4)
         except IOError as e:
             logger.error(f"Error saving state file: {e}")
+
+def mark_activated(title_name: str, slot_key: str):
+    """Remember that this specific title+slot has been auto-assigned already."""
+    act = state.setdefault('activated_slots', {}).setdefault(title_name, [])
+    if slot_key not in act:
+        act.append(slot_key)
+
+def is_activated(title_name: str, slot_key: str) -> bool:
+    """Check if we've already auto-assigned this reservation."""
+    return slot_key in state.get('activated_slots', {}).get(title_name, [])
 
 def log_action(action, user_id, details):
     entry = {'timestamp': now_utc().isoformat(), 'action': action, 'user_id': user_id, 'details': details}
@@ -207,7 +249,6 @@ async def rebuild_schedules_from_log():
                 continue
             if title_name not in TITLES_CATALOG:
                 continue
-            # normalize whatever was saved to our canonical naive key
             norm_key = normalize_iso_slot_string(iso_time)
             schedules_for_title = state['schedules'].setdefault(title_name, {})
             schedules_for_title.setdefault(norm_key, ign)
@@ -320,8 +361,10 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             for iso_time, ign in schedule_data.items():
                 if iso_time in state['sent_reminders']:
                     continue
-                shift_time = parse_iso_utc(iso_time) if ("+" in iso_time) else parse_iso_utc(iso_time + "+00:00") if len(iso_time) == 19 else parse_iso_utc(iso_time)
-                # (The above tolerates both naive and tz-aware strings.)
+                # tolerate both naive and tz-aware strings
+                shift_time = parse_iso_utc(iso_time) if ("+" in iso_time) else (
+                    parse_iso_utc(iso_time + "+00:00") if len(iso_time) == 19 else parse_iso_utc(iso_time)
+                )
                 reminder_time = shift_time - timedelta(minutes=5)
                 if reminder_time <= now < shift_time:
                     try:
@@ -337,8 +380,36 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                     except Exception as e:
                         logger.error(f"Could not send shift reminder: {e}")
 
+        # Auto-assign reserved slots at slot start if vacant
+        for title_name, schedule_data in state.get('schedules', {}).items():
+            for iso_time, reserver_ign in list(schedule_data.items()):
+                try:
+                    slot_start = parse_iso_utc(iso_time) if len(iso_time) >= 19 else datetime.fromisoformat(iso_time).replace(tzinfo=UTC)
+                    slot_end = slot_start + timedelta(hours=SHIFT_HOURS)
+
+                    if slot_start <= now < slot_end and not is_activated(title_name, iso_time):
+                        if title_is_vacant_now(title_name):
+                            state['titles'].setdefault(title_name, {})
+                            state['titles'][title_name].update({
+                                'holder': {'name': reserver_ign, 'coords': '-', 'discord_id': None},
+                                'claim_date': slot_start.isoformat(),
+                                'expiry_date': slot_end.isoformat(),
+                                'pending_claimant': None
+                            })
+                            mark_activated(title_name, iso_time)
+                            try:
+                                await self.announce(
+                                    f"✅ Scheduled handoff: {title_name} is now assigned to {reserver_ign} "
+                                    f"({slot_start.strftime('%H:%M')}–{slot_end.strftime('%H:%M')} UTC)."
+                                )
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.error(f"Auto-assign-from-schedule failed for {title_name} {iso_time}: {e}")
+
+        # persist any changes done above
         if titles_to_release or any(
-            iso_time not in state.get('sent_reminders', [])
+            iso_time in state.get('sent_reminders', [])
             for schedule_data in state.get('schedules', {}).values()
             for iso_time in schedule_data
         ):
@@ -511,6 +582,48 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         await ctx.send(f"Booked '{title_name}' for **{ign}** on {date_str} at {time_str} UTC.")
         await self.announce(f"🗓️ SCHEDULE UPDATE: A 3-hour slot for **'{title_name}'** was booked by **{ign}** for {date_str} at {time_str} UTC.")
 
+    @commands.command(name="unschedule", help='Unschedule a reservation. Usage: !unschedule "Title Name" 2025-08-30T15:00:00')
+    async def unschedule(self, ctx, title_name: str, slot_iso: str):
+        """
+        Remove a reservation. Only the reserver (by IGN) or an admin can cancel.
+        """
+        try:
+            title_name = title_name.strip()
+            slot_key = slot_iso.strip()
+            schedules = state.get('schedules', {}).get(title_name, {})
+            if not schedules:
+                await ctx.send(f"No schedule exists for: {title_name}")
+                return
+
+            reserver_ign = schedules.get(slot_key)
+            if not reserver_ign:
+                await ctx.send(f"No reservation found at {slot_key} for {title_name}.")
+                return
+
+            # Figure caller IGN (fallback to display_name)
+            caller_ign = (state.get('users', {}).get(str(ctx.author.id), {}) or {}).get('ign') or ctx.author.display_name
+
+            # Admin check
+            perms = getattr(ctx.author, "guild_permissions", None)
+            caller_is_admin = bool(perms and (perms.manage_guild or perms.administrator))
+
+            if caller_ign.lower() != reserver_ign.lower() and not caller_is_admin:
+                await ctx.send("Only the reserver or an admin can cancel this slot.")
+                return
+
+            # Delete reservation
+            del schedules[slot_key]
+            # Clean activation mark if present
+            acts = state.get('activated_slots', {}).get(title_name, [])
+            if slot_key in acts:
+                acts.remove(slot_key)
+
+            await save_state()
+            await ctx.send(f"Cancelled: {title_name} @ {slot_key} (was reserved by {reserver_ign}).")
+
+        except Exception as e:
+            await ctx.send(f"Sorry, something went wrong cancelling that reservation: {e}")
+
     async def release_logic(self, ctx, title_name, reason):
         holder_info = state['titles'][title_name]['holder']
         log_action('release', ctx.author.id, {'title': title_name, 'ign': holder_info['name'], 'reason': reason})
@@ -560,6 +673,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 # ========= Flask App =========
 ensure_icons_cached()
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret")  # needed for flash()
 
 def get_bot_state():
     return state
@@ -616,6 +730,51 @@ def view_log():
             for row in reader:
                 log_data.append(row)
     return render_template('log.html', logs=reversed(log_data))
+
+@app.post("/cancel")
+def cancel_schedule():
+    """
+    Web cancel for a reservation. The person must enter the same IGN as the one on the reservation.
+    """
+    title_name = request.form.get("title", "").strip()
+    slot_key   = request.form.get("slot", "").strip()
+    ign_input  = request.form.get("ign", "").strip()
+
+    if not title_name or not slot_key or not ign_input:
+        flash("Missing info to cancel.")
+        return redirect(url_for("dashboard"))
+
+    schedule = state.get('schedules', {}).get(title_name, {})
+    reserver_ign = schedule.get(slot_key)
+    if not reserver_ign:
+        flash("No reservation found for that slot.")
+        return redirect(url_for("dashboard"))
+
+    if ign_input.lower() != reserver_ign.lower():
+        flash("Only the reserver can cancel this slot from the web.")
+        return redirect(url_for("dashboard"))
+
+    try:
+        del schedule[slot_key]
+    except KeyError:
+        pass
+
+    acts = state.get('activated_slots', {}).get(title_name, [])
+    if slot_key in acts:
+        acts.remove(slot_key)
+
+    # Persist
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(save_state())
+        else:
+            loop.run_until_complete(save_state())
+    except Exception:
+        pass
+
+    flash(f"Cancelled reservation for {title_name} @ {slot_key}.")
+    return redirect(url_for("dashboard"))
 
 @app.route("/book-slot", methods=['POST'])
 def book_slot():
@@ -711,10 +870,11 @@ with open('templates/dashboard.html', 'w') as f:
         h3 { display: flex; align-items: center; margin-top: 0; }
         h3 img { margin-right: 10px; }
         table { width: 100%; border-collapse: collapse; margin-top: 1em; }
-        th, td { border: 1px solid #40444b; padding: 8px; text-align: center; }
+        th, td { border: 1px solid #40444b; padding: 8px; text-align: center; vertical-align: top; }
         input, select, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #555; background-color: #40444b; color: #dcddde; }
         button { background-color: #7289da; cursor: pointer; font-weight: bold; }
         a { color: #7289da; }
+        .small { font-size: 12px; }
     </style>
 </head>
 <body>
@@ -757,6 +917,15 @@ with open('templates/dashboard.html', 'w') as f:
 
         <div class="schedule-card">
             <h2>Upcoming Week Schedule</h2>
+            {% with messages = get_flashed_messages() %}
+              {% if messages %}
+                <ul>
+                  {% for m in messages %}
+                    <li class="small">{{ m }}</li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+            {% endwith %}
             <table>
                 <thead>
                     <tr>
@@ -772,12 +941,19 @@ with open('templates/dashboard.html', 'w') as f:
                         <td>{{ hour }}</td>
                         {% for day in days %}
                         <td>
+                            {% set slot_time = day.strftime('%Y-%m-%d') ~ 'T' ~ hour ~ ':00' %}
                             {% for title_name, schedule_data in schedules.items() %}
-                                {# Our keys are naive ISO like 2025-09-01T12:00:00 #}
-                                {% set slot_time = day.strftime('%Y-%m-%d') ~ 'T' ~ hour ~ ':00' %}
                                 {% set who = schedule_data.get(slot_time) %}
                                 {% if who %}
-                                    <div><strong>{{ title_name }}</strong><br>{{ who }}</div>
+                                    <div style="margin-bottom:8px;">
+                                        <strong>{{ title_name }}</strong><br>{{ who }}
+                                        <form method="post" action="{{ url_for('cancel_schedule') }}" class="small" style="margin-top:4px;">
+                                          <input type="hidden" name="title" value="{{ title_name }}">
+                                          <input type="hidden" name="slot" value="{{ slot_time }}">
+                                          <input type="text" name="ign" placeholder="type your IGN" required style="width:9rem;">
+                                          <button type="submit">Cancel</button>
+                                        </form>
+                                    </div>
                                 {% endif %}
                             {% endfor %}
                         </td>
@@ -852,7 +1028,6 @@ async def on_ready():
 
     await bot.add_cog(TitleCog(bot))
     try:
-        # Safe even if you didn't define slash commands
         await bot.tree.sync()
     except Exception as e:
         logger.error(f"Slash sync failed: {e}")
