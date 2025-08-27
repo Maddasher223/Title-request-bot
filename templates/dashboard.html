@@ -2,7 +2,9 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8"><title>Title Requestor</title>
+    <meta charset="UTF-8">
+    <title>Title Requestor</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='icons/title-requestor.png') }}">
     <style>
         body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
         .container { max-width: 1400px; margin: auto; }
@@ -21,7 +23,10 @@
 </head>
 <body>
     <div class="container">
-        <h1>👑 Title Requestor</h1>
+        <h1>
+    <img src="{{ url_for('static', filename='icons/title-requestor.png') }}" width="32" height="32" style="vertical-align: middle; margin-right: 8px;">
+    Title Requestor
+</h1>
         <div class="title-grid">
             {% for title in titles %}
             <div class="title-card">

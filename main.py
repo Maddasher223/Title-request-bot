@@ -1,7 +1,8 @@
 # main.py - Complete Code
 
 import discord
-from discord.ext import commands, tasks, app_commands
+from discord.ext import commands, tasks
+from discord import app_commands
 import json
 import os
 import logging
@@ -12,6 +13,17 @@ from flask import Flask, render_template, request, redirect, url_for, send_from_
 import csv
 from waitress import serve
 import requests
+from datetime import datetime, timedelta, UTC  # make sure this import exists
+
+def now_utc():
+    return datetime.now(UTC)
+
+def parse_iso_utc(s: str) -> datetime:
+    """Parse ISO strings you saved before; make them UTC-aware if they were naive."""
+    dt = parse_iso_utc(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
 
 # --- Static Title Configuration ---
 TITLES_CATALOG = {
@@ -92,7 +104,7 @@ async def save_state():
             logger.error(f"Error saving state file: {e}")
 
 def log_action(action, user_id, details):
-    log_entry = {'timestamp': datetime.utcnow().isoformat(), 'action': action, 'user_id': user_id, 'details': details}
+    log_entry = {'timestamp': now_utc().isoformat(), 'action': action, 'user_id': user_id, 'details': details}
     try:
         logs = []
         if os.path.exists(LOG_FILE):
@@ -213,12 +225,12 @@ class TitleCog(commands.Cog, name="TitleRequest"):
     @tasks.loop(minutes=1)
     async def title_check_loop(self):
         await self.bot.wait_until_ready()
-        now = datetime.utcnow()
+        now = now_utc()
         
         titles_to_release = []
         for title_name, data in state.get('titles', {}).items():
             if data.get('holder') and data.get('expiry_date'):
-                if now >= datetime.fromisoformat(data['expiry_date']):
+                if now >= parse_iso_utc(data['expiry_date']):
                     titles_to_release.append(title_name)
         
         for title_name in titles_to_release:
@@ -237,7 +249,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                 if reminder_time <= now < shift_time:
                     try:
                         csv_data = {
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": now_utc().isoformat(),
                             "title_name": title_name,
                             "in_game_name": ign if isinstance(ign, str) else str(ign),
                             "coordinates": "-",  # schedule view might not have coords
@@ -266,7 +278,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 
         if not title.get('holder'):
             title['pending_claimant'] = claimant_data
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = now_utc().isoformat()
             discord_user = f"{author.name} ({author.id})" if author else "Web Form"
             
             log_action('claim_request', author.id if author else 0, {'title': title_name, 'ign': ign, 'coords': coords})
@@ -307,8 +319,8 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             if data.get('holder'):
                 holder = data['holder']
                 holder_name = f"{holder['name']} ({holder['coords']})"
-                expiry = datetime.fromisoformat(data['expiry_date'])
-                remaining = expiry - datetime.utcnow()
+                expiry = parse_iso_utc(data['expiry_date'])
+                remaining = expiry - now_utc()
                 status += f"**Held by:** {holder_name}\n*Expires in: {str(timedelta(seconds=int(remaining.total_seconds())))}*"
             elif data.get('pending_claimant'):
                 claimant = data['pending_claimant']
@@ -338,7 +350,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             return
 
         min_hold_hours = state.get('config', {}).get('min_hold_duration_hours', 24)
-        now = datetime.utcnow()
+        now = now_utc()
         expiry_date = now + timedelta(hours=min_hold_hours)
         title.update({
             'holder': pending_claimant, 'claim_date': now.isoformat(),
@@ -476,8 +488,8 @@ def dashboard():
 
         remaining = "N/A"
         if data.get('expiry_date'):
-            expiry = datetime.fromisoformat(data['expiry_date'])
-            delta = expiry - datetime.utcnow()
+            expiry = parse_iso_utc(data['expiry_date'])
+            delta = expiry - now_utc()
             remaining = str(timedelta(seconds=int(delta.total_seconds()))) if delta.total_seconds() > 0 else "Expired"
 
         # Use local cached icon
@@ -490,7 +502,7 @@ def dashboard():
             'buffs': TITLES_CATALOG[title_name]['effects']
         })
 
-    today = datetime.utcnow().date()
+    today = now_utc().date()
     days = [(today + timedelta(days=i)) for i in range(7)]
     hours = [f"{h:02d}:00" for h in range(0, 24, 3)]
     schedules = bot_state.get('schedules', {})
@@ -541,7 +553,7 @@ def book_slot():
                 log_action('schedule_book_web', 0, {'title': title_name, 'time': schedule_key, 'ign': ign})
                 # --- also log as a "request" to CSV like Discord path ---
                 csv_data = {
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": now_utc().isoformat(),
                     "title_name": title_name,
                     "in_game_name": ign,
                     "coordinates": coords,
@@ -565,7 +577,9 @@ with open('templates/dashboard.html', 'w') as f:
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8"><title>Title Requestor</title>
+    <meta charset="UTF-8">
+    <title>Title Requestor</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='icons/title-requestor.png') }}">
     <style>
         body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
         .container { max-width: 1400px; margin: auto; }
@@ -584,7 +598,10 @@ with open('templates/dashboard.html', 'w') as f:
 </head>
 <body>
     <div class="container">
-        <h1>👑 Title Requestor</h1>
+        <h1>
+    <img src="{{ url_for('static', filename='icons/title-requestor.png') }}" width="32" height="32" style="vertical-align: middle; margin-right: 8px;">
+    Title Requestor
+</h1>
         <div class="title-grid">
             {% for title in titles %}
             <div class="title-card">
@@ -645,7 +662,9 @@ with open('templates/log.html', 'w') as f:
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8"><title>Request Log</title>
+    <meta charset="UTF-8">
+    <title>Request Log</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='icons/title-requestor.png') }}">
     <style>
         body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
         .container { max-width: 1200px; margin: auto; }
