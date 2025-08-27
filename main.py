@@ -100,7 +100,7 @@ ORDERED_TITLES = [
 WEBHOOK_URL = "https://discord.com/api/webhooks/1409980293762253001/s5ffx0R9Tl9fhcvQXAWaqA_LG5b7SsUmpzeBHZOdGGznnLg_KRNwtk6sGvOOhh0oSw10"
 GUARDIAN_ROLE_ID = 1409964411057344512
 TITLE_REQUESTS_CHANNEL_ID = 1409770504696631347
-# Simple admin PIN for /admin (set env ADMIN_PIN, or it defaults to "letmein")
+# Simple admin PIN for /admin (set env ADMIN_PIN, or it defaults to "ARC1041")
 ADMIN_PIN = os.getenv("ADMIN_PIN", "ARC1041")
 
 # ========= Discord setup =========
@@ -752,11 +752,130 @@ def view_log():
 def admin_home():
     """
     SUPER SIMPLE ADMIN WIREFRAME (read-only for now).
-    Access: /admin?pin=YOURPIN  (default pin: letmein)
+    Access: /admin?pin=YOURPIN  (default pin: ARC1041)
     """
     pin = request.args.get("pin", "")
     if pin != ADMIN_PIN:
         return "Forbidden (bad or missing pin). Add ?pin=YOURPIN", 403
+    
+from flask import request, redirect, url_for
+
+# --- ADMIN ACTIONS ---
+
+@app.post("/admin/force-release")
+def admin_force_release():
+    pin = request.args.get("pin", "")
+    if pin != ADMIN_PIN:
+        return "Forbidden", 403
+    title = request.form.get("title", "").strip()
+    if not title or title not in state["titles"]:
+        flash("Bad title")
+        return redirect(url_for("admin_home", pin=pin))
+
+    # clear holder
+    state["titles"][title].update({
+        "holder": None,
+        "claim_date": None,
+        "expiry_date": None,
+        "pending_claimant": None
+    })
+    asyncio.run(save_state())
+    flash(f"Force released {title}")
+    return redirect(url_for("admin_home", pin=pin))
+
+
+@app.post("/admin/cancel")
+def admin_cancel():
+    pin = request.args.get("pin", "")
+    if pin != ADMIN_PIN:
+        return "Forbidden", 403
+    title = request.form.get("title", "").strip()
+    slot = request.form.get("slot", "").strip()
+    sched = state.get("schedules", {}).get(title, {})
+    if not (title and slot and slot in sched):
+        flash("Reservation not found")
+        return redirect(url_for("admin_home", pin=pin))
+
+    ign = sched[slot]
+    del sched[slot]
+    asyncio.run(save_state())
+    flash(f"Cancelled {title} @ {slot} (was {ign})")
+    return redirect(url_for("admin_home", pin=pin))
+
+
+@app.post("/admin/assign-now")
+def admin_assign_now():
+    pin = request.args.get("pin", "")
+    if pin != ADMIN_PIN:
+        return "Forbidden", 403
+    title = request.form.get("title", "").strip()
+    ign = request.form.get("ign", "").strip()
+    slot = request.form.get("slot", "").strip()
+    if not (title and ign and title in state["titles"]):
+        flash("Bad assign request")
+        return redirect(url_for("admin_home", pin=pin))
+
+    # assign immediately
+    now = now_utc()
+    end = now + timedelta(hours=SHIFT_HOURS)
+    state["titles"][title].update({
+        "holder": {"name": ign, "coords": "-", "discord_id": 0},
+        "claim_date": now.isoformat(),
+        "expiry_date": end.isoformat(),
+        "pending_claimant": None
+    })
+    asyncio.run(save_state())
+    flash(f"Assigned {title} immediately to {ign}")
+    return redirect(url_for("admin_home", pin=pin))
+
+
+@app.post("/admin/move")
+def admin_move():
+    pin = request.args.get("pin", "")
+    if pin != ADMIN_PIN:
+        return "Forbidden", 403
+    title = request.form.get("title", "").strip()
+    slot = request.form.get("slot", "").strip()
+    new_title = request.form.get("new_title", "").strip()
+    new_slot = request.form.get("new_slot", "").strip()
+    if not (title and slot and new_title and new_slot):
+        flash("Missing info")
+        return redirect(url_for("admin_home", pin=pin))
+
+    sched = state.get("schedules", {}).get(title, {})
+    if slot not in sched:
+        flash("Original reservation not found")
+        return redirect(url_for("admin_home", pin=pin))
+
+    ign = sched[slot]
+    del sched[slot]
+    state.setdefault("schedules", {}).setdefault(new_title, {})[new_slot] = ign
+    asyncio.run(save_state())
+    flash(f"Moved {ign} from {title}@{slot} → {new_title}@{new_slot}")
+    return redirect(url_for("admin_home", pin=pin))
+
+
+@app.post("/admin/settings")
+def admin_settings():
+    pin = request.args.get("pin", "")
+    if pin != ADMIN_PIN:
+        return "Forbidden", 403
+    announce = request.form.get("announce_channel")
+    log = request.form.get("log_channel")
+    shift = request.form.get("shift_hours")
+
+    cfg = state.setdefault("config", {})
+    if announce: cfg["announcement_channel"] = int(announce)
+    if log: cfg["log_channel"] = int(log)
+    if shift:
+        try:
+            global SHIFT_HOURS
+            SHIFT_HOURS = int(shift)
+        except ValueError:
+            flash("Invalid shift hour")
+    asyncio.run(save_state())
+    flash("Settings updated")
+    return redirect(url_for("admin_home", pin=pin))
 
     # Active titles
     active = []
@@ -1146,10 +1265,12 @@ with open('templates/admin.html', 'w') as f:
               <td>{{ t.holder }}</td>
               <td>{{ t.coords }}</td>
               <td>{{ t.expires }}</td>
-              <td>
-                <!-- placeholder -->
-                <button disabled title="placeholder">Force Release</button>
-              </td>
+              <td class="actions">
+                <form method="post" action="{{ url_for('admin_force_release', pin=request.args.get('pin')) }}">
+                    <input type="hidden" name="title" value="{{ t.title }}">
+                    <button type="submit" title="Immediately free this title">Force Release</button>
+                </form>
+            </td>
             </tr>
             {% endfor %}
             {% if active_titles|length == 0 %}
@@ -1174,12 +1295,31 @@ with open('templates/admin.html', 'w') as f:
               <td>{{ r.slot_iso }}</td>
               <td>{{ r.title }}</td>
               <td>{{ r.ign }}</td>
-              <td class="row">
-                <!-- placeholders -->
-                <button disabled title="placeholder">Cancel</button>
-                <button disabled title="placeholder">Assign Now</button>
-                <button disabled title="placeholder">Move…</button>
-              </td>
+              <td class="actions">
+                <!-- Cancel -->
+                <form method="post" action="{{ url_for('admin_cancel', pin=request.args.get('pin')) }}">
+                    <input type="hidden" name="title" value="{{ r.title }}">
+                    <input type="hidden" name="slot" value="{{ r.slot_iso }}">
+                    <button type="submit">Cancel</button>
+                </form>
+
+                <!-- Assign Now -->
+                <form method="post" action="{{ url_for('admin_assign_now', pin=request.args.get('pin')) }}">
+                    <input type="hidden" name="title" value="{{ r.title }}">
+                    <input type="hidden" name="ign" value="{{ r.ign }}">
+                    <input type="hidden" name="slot" value="{{ r.slot_iso }}">
+                    <button type="submit" title="Override: assign immediately">Assign Now</button>
+                </form>
+
+                <!-- Move -->
+                <form method="post" action="{{ url_for('admin_move', pin=request.args.get('pin')) }}">
+                    <input type="hidden" name="title" value="{{ r.title }}">
+                    <input type="hidden" name="slot" value="{{ r.slot_iso }}">
+                    <input type="text" name="new_title" placeholder="New Title (e.g., Architect)" required>
+                    <input type="text" name="new_slot" placeholder="YYYY-MM-DDTHH:MM:00" required>
+                    <button type="submit">Move</button>
+                </form>
+            </td>
             </tr>
             {% endfor %}
             {% if upcoming|length == 0 %}
@@ -1216,23 +1356,25 @@ with open('templates/admin.html', 'w') as f:
       <!-- Settings -->
       <div class="card">
         <h2>Settings</h2>
-        <div class="row">
-          <label>Announcement Channel:</label>
-          <input type="text" value="{{ settings.announcement_channel or '' }}" readonly>
-          <button disabled title="Set via !set_announce">Update</button>
-        </div>
-        <div class="row" style="margin-top:6px;">
-          <label>Log Channel:</label>
-          <input type="text" value="{{ settings.log_channel or '' }}" readonly>
-          <button disabled title="Set via !set_log">Update</button>
-        </div>
-        <div class="row" style="margin-top:6px;">
-          <label>Shift Duration (hrs):</label>
-          <input type="number" value="{{ settings.shift_hours }}" min="1" max="24" readonly>
-          <button disabled title="Placeholder">Save</button>
-        </div>
+        <form method="post" action="{{ url_for('admin_settings', pin=request.args.get('pin')) }}">
+          <div class="row">
+            <label>Announcement Channel ID:</label>
+            <input type="text" name="announce_channel" value="{{ settings.announcement_channel or '' }}">
+          </div>
+          <div class="row" style="margin-top:6px;">
+            <label>Log Channel ID:</label>
+            <input type="text" name="log_channel" value="{{ settings.log_channel or '' }}">
+          </div>
+          <div class="row" style="margin-top:6px;">
+            <label>Shift Duration (hrs):</label>
+            <input type="number" name="shift_hours" value="{{ settings.shift_hours }}" min="1" max="24">
+          </div>
+          <div class="row" style="margin-top:10px;">
+            <button type="submit">Save Settings</button>
+          </div>
+        </form>
         <p class="muted" style="margin-top:10px;">
-          Channel settings are currently configured by Discord commands:<br>
+          You can also set channels via Discord commands:<br>
           <code>!set_announce #channel</code> and <code>!set_log #channel</code>.
         </p>
       </div>
