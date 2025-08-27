@@ -117,30 +117,87 @@ def log_to_csv(request_data):
     except IOError as e:
         logger.error(f"Error writing to CSV file: {e}")
 
-def send_webhook_notification(data):
-    """Sends a notification to a Discord webhook."""
+        # Map each title to a local filename in static/icons/
+ICON_FILES = {
+    "Guardian of Harmony": "guardian_harmony.png",
+    "Guardian of Air": "guardian_air.png",
+    "Guardian of Water": "guardian_water.png",
+    "Guardian of Earth": "guardian_earth.png",
+    "Guardian of Fire": "guardian_fire.png",
+    "Architect": "architect.png",
+    "General": "general.png",
+    "Governor": "governor.png",
+    "Prefect": "prefect.png",
+}
+
+# Original sources (without the expiring query params)
+ICON_SOURCES = {
+    "Guardian of Harmony": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793727018569758/guardian_harmony.png",
+    "Guardian of Air": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793463817605181/guardian_air.png",
+    "Guardian of Water": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793588778369104/guardian_water.png",
+    "Guardian of Earth": "https://cdn.discordapp.com/attachments/1409793076955840583/1409794927730229278/guardian_earth.png",
+    "Guardian of Fire": "https://cdn.discordapp.com/attachments/1409793076955840583/1409794024948367380/guardian_fire.png",
+    "Architect": "https://cdn.discordapp.com/attachments/1409793076955840583/1409796581661605969/architect.png",
+    "General": "https://cdn.discordapp.com/attachments/1409793076955840583/1409796597277266000/general.png",
+    "Governor": "https://cdn.discordapp.com/attachments/1409793076955840583/1409796936227356723/governor.png",
+    "Prefect": "https://cdn.discordapp.com/attachments/1409793076955840583/1409797574763741205/prefect.png",
+}
+
+def ensure_icons_cached():
+    """Download icons to static/icons/ if missing; keep local copies stable."""
+    static_dir = os.path.join(os.path.dirname(__file__), "static", "icons")
+    os.makedirs(static_dir, exist_ok=True)
+    for title, fname in ICON_FILES.items():
+        path = os.path.join(static_dir, fname)
+        if not os.path.exists(path):
+            url = ICON_SOURCES[title]
+            try:
+                r = requests.get(url, timeout=15)
+                r.raise_for_status()
+                with open(path, "wb") as f:
+                    f.write(r.content)
+            except Exception as e:
+                logging.getLogger(__name__).error(f"Icon download failed for {title}: {e}")
+
+# === Discord webhook helper (role + channel tagging + allowed_mentions) ===
+def send_webhook_notification(data, reminder=False):
+    """
+    Send a Discord webhook message.
+    Expects `data` with keys: title_name, in_game_name, coordinates, discord_user, timestamp (ISO).
+    If reminder=True, sends the T-5 min pre-start notice.
+    """
+    role_tag = f"<@&{GUARDIAN_ROLE_ID}>"
+    channel_tag = f"<#{TITLE_REQUESTS_CHANNEL_ID}>"
+
+    if reminder:
+        title = f"Reminder: {data.get('title_name','-')} shift starts soon!"
+        content = f"{role_tag} {channel_tag} ⏰ The 3-hour shift for **{data.get('title_name','-')}** by **{data.get('in_game_name','-')}** starts in 5 minutes!"
+    else:
+        title = "New Title Request"
+        content = f"{role_tag} {channel_tag} 👑 A new request was submitted."
+
     payload = {
-        "content": f"<@&{GUARDIAN_ROLE_ID}> New Title Request Submitted!",
+        "content": content,
+        "allowed_mentions": {"parse": ["roles", "everyone"]},
         "embeds": [{
-            "title": "New Title Request",
+            "title": title,
             "color": 5814783,
             "fields": [
-                {"name": "Title", "value": data['title_name'], "inline": True},
-                {"name": "In-Game Name", "value": data['in_game_name'], "inline": True},
-                {"name": "Coordinates", "value": data['coordinates'], "inline": True},
-                {"name": "Submitted By", "value": data['discord_user'], "inline": False}
+                {"name": "Title", "value": data.get('title_name','-'), "inline": True},
+                {"name": "In-Game Name", "value": data.get('in_game_name','-'), "inline": True},
+                {"name": "Coordinates", "value": data.get('coordinates','-'), "inline": True},
+                {"name": "Submitted By", "value": data.get('discord_user','-'), "inline": False}
             ],
-            "timestamp": data['timestamp']
+            "timestamp": data.get('timestamp')
         }]
     }
     try:
-        response = requests.post(WEBHOOK_URL, json=payload)
-        response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error sending webhook notification: {e}")
+        r = requests.post(WEBHOOK_URL, json=payload, timeout=8)
+        r.raise_for_status()
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Webhook send failed: {e}")
 
 def is_guardian_or_admin(ctx):
-    """Check if the user is a Guardian or an Admin."""
     if ctx.author.guild_permissions.administrator:
         return True
     guardian_role_ids = state.get('config', {}).get('guardian_roles', [])
@@ -170,21 +227,65 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         state.setdefault('sent_reminders', [])
         for title_name, schedule_data in state.get('schedules', {}).items():
             for iso_time, ign in schedule_data.items():
-                if iso_time in state['sent_reminders']: continue
+                if iso_time in state['sent_reminders']: 
+                    continue
                 
                 shift_time = datetime.fromisoformat(iso_time)
                 reminder_time = shift_time - timedelta(minutes=5)
 
+                # --- change: use webhook for the reminder (tags role + channel) ---
                 if reminder_time <= now < shift_time:
                     try:
-                        channel = await self.bot.fetch_channel(TITLE_REQUESTS_CHANNEL_ID)
-                        await channel.send(f"<@&{GUARDIAN_ROLE_ID}> Reminder: The 3-hour shift for **{title_name}** held by **{ign}** starts in 5 minutes!")
+                        csv_data = {
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "title_name": title_name,
+                            "in_game_name": ign if isinstance(ign, str) else str(ign),
+                            "coordinates": "-",  # schedule view might not have coords
+                            "discord_user": "Scheduler"
+                        }
+                        send_webhook_notification(csv_data, reminder=True)
                         state['sent_reminders'].append(iso_time)
-                    except (discord.NotFound, discord.Forbidden) as e:
-                        logger.error(f"Could not send shift reminder: {e}")
+                    except Exception as e:
+                        logger.error(f"Could not send shift reminder via webhook: {e}")
 
         if titles_to_release or any(iso_time not in state.get('sent_reminders', []) for schedule_data in state.get('schedules', {}).values() for iso_time in schedule_data):
             await save_state()
+
+    async def handle_claim_request(self, guild, title_name, ign, coords, author):
+        if title_name not in REQUESTABLE:
+            logger.warning(f"Attempt to claim non-requestable title: {title_name}")
+            return
+
+        if any(t.get('holder') and t['holder']['name'] == ign for t in state['titles'].values()):
+            if isinstance(author, discord.Member):
+                await author.send("You already hold a title.")
+            return
+
+        title = state['titles'][title_name]
+        claimant_data = {'name': ign, 'coords': coords, 'discord_id': author.id if author else 0}
+
+        if not title.get('holder'):
+            title['pending_claimant'] = claimant_data
+            timestamp = datetime.utcnow().isoformat()
+            discord_user = f"{author.name} ({author.id})" if author else "Web Form"
+            
+            log_action('claim_request', author.id if author else 0, {'title': title_name, 'ign': ign, 'coords': coords})
+            csv_data = {'timestamp': timestamp, 'title_name': title_name, 'in_game_name': ign, 'coordinates': coords, 'discord_user': discord_user}
+            log_to_csv(csv_data)
+            # --- immediate webhook on submission (discord path) ---
+            send_webhook_notification(csv_data, reminder=False)
+
+            guardian_message = (f"👑 **Title Request:** Player **{ign}** ({coords}) has requested **'{title_name}'**. "
+                                f"Approve with `!assign {title_name} | {ign}`.")
+            await self.notify_guardians(guild, title_name, guardian_message)
+            if isinstance(author, discord.Member):
+                await author.send(f"Your request for '{title_name}' for player **{ign}** has been submitted.")
+        else:
+            title.setdefault('queue', []).append(claimant_data)
+            log_action('queue_join', author.id if author else 0, {'title': title_name, 'ign': ign})
+            if isinstance(author, discord.Member):
+                await author.send(f"Player **{ign}** has been added to the queue for '{title_name}'.")
+        await save_state()
 
     @commands.command(help="Claim a title. Usage: !claim <Title Name> | <In-Game Name> | <X:Y Coords>")
     async def claim(self, ctx, *, args: str):
@@ -193,37 +294,8 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         except ValueError:
             await ctx.send("Invalid format. Use `!claim <Title Name> | <In-Game Name> | <X:Y Coords>`")
             return
-
-        if title_name not in REQUESTABLE:
-            await ctx.send(f"The title '{title_name}' is not requestable.")
-            return
-
-        if any(t.get('holder') and t['holder']['name'] == ign for t in state['titles'].values()):
-            await ctx.send("You already hold a title.")
-            return
-
-        title = state['titles'][title_name]
-        claimant_data = {'name': ign, 'coords': coords, 'discord_id': ctx.author.id}
-
-        if not title.get('holder'):
-            title['pending_claimant'] = claimant_data
-            timestamp = datetime.utcnow().isoformat()
-            discord_user = f"{ctx.author.name} ({ctx.author.id})"
-            
-            log_action('claim_request', ctx.author.id, {'title': title_name, 'ign': ign, 'coords': coords})
-            csv_data = {'timestamp': timestamp, 'title_name': title_name, 'in_game_name': ign, 'coordinates': coords, 'discord_user': discord_user}
-            log_to_csv(csv_data)
-            send_webhook_notification(csv_data)
-
-            guardian_message = (f"👑 **Title Request:** Player **{ign}** ({coords}) has requested **'{title_name}'**. "
-                                f"Approve with `!assign {title_name} | {ign}`.")
-            await self.notify_guardians(ctx.guild, title_name, guardian_message)
-            await ctx.send(f"Your request for '{title_name}' for player **{ign}** has been submitted.")
-        else:
-            title.setdefault('queue', []).append(claimant_data)
-            log_action('queue_join', ctx.author.id, {'title': title_name, 'ign': ign})
-            await ctx.send(f"Player **{ign}** has been added to the queue for '{title_name}'.")
-        await save_state()
+        
+        await self.handle_claim_request(ctx.guild, title_name, ign, coords, ctx.author)
 
     @commands.command(help="List all titles and their status.")
     async def titles(self, ctx):
@@ -364,6 +436,8 @@ class TitleCog(commands.Cog, name="TitleRequest"):
     async def notify_guardians(self, guild, title_name, message):
         await self.announce(message)
 
+ensure_icons_cached()
+
 # --- Flask Web Server ---
 app = Flask(__name__)
 
@@ -374,22 +448,28 @@ def get_bot_state():
 def dashboard():
     bot_state = get_bot_state()
     titles_data = []
+
     for title_name in ORDERED_TITLES:
         data = bot_state['titles'].get(title_name, {})
         holder_info = "None"
         if data.get('holder'):
             holder = data['holder']
             holder_info = f"{holder['name']} ({holder['coords']})"
-        
+
         remaining = "N/A"
         if data.get('expiry_date'):
             expiry = datetime.fromisoformat(data['expiry_date'])
             delta = expiry - datetime.utcnow()
             remaining = str(timedelta(seconds=int(delta.total_seconds()))) if delta.total_seconds() > 0 else "Expired"
-        
+
+        # Use local cached icon
+        local_icon = url_for('static', filename=f"icons/{ICON_FILES[title_name]}")
         titles_data.append({
-            'name': title_name, 'holder': holder_info, 'expires_in': remaining,
-            'icon': TITLES_CATALOG[title_name]['image'], 'buffs': TITLES_CATALOG[title_name]['effects']
+            'name': title_name,
+            'holder': holder_info,
+            'expires_in': remaining,
+            'icon': local_icon,
+            'buffs': TITLES_CATALOG[title_name]['effects']
         })
 
     today = datetime.utcnow().date()
@@ -398,7 +478,16 @@ def dashboard():
     schedules = bot_state.get('schedules', {})
     requestable_titles = REQUESTABLE
 
-    return render_template('dashboard.html', titles=titles_data, days=days, hours=hours, schedules=schedules, today=today.strftime('%Y-%m-%d'), requestable_titles=requestable_titles)
+    return render_template(
+        'dashboard.html',
+        titles=titles_data,
+        days=days,
+        hours=hours,
+        schedules=schedules,
+        today=today.strftime('%Y-%m-%d'),
+        requestable_titles=requestable_titles
+    )
+
 
 @app.route("/log")
 def view_log():
@@ -420,6 +509,8 @@ def book_slot():
     
     if not all([title_name, ign, coords, date_str, time_str]):
         return "Missing form data.", 400
+    if title_name not in REQUESTABLE:
+        return "This title cannot be requested.", 400
 
     schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
     
@@ -428,10 +519,21 @@ def book_slot():
             schedules = state['schedules'].setdefault(title_name, {})
             schedule_key = schedule_time.isoformat()
             if schedule_key not in schedules:
-                schedules[schedule_key] = f"{ign} ({coords})"
+                schedules[schedule_key] = ign  # keep IGN only; coords optional in schedule grid
                 log_action('schedule_book_web', 0, {'title': title_name, 'time': schedule_key, 'ign': ign})
+                # --- also log as a "request" to CSV like Discord path ---
+                csv_data = {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "title_name": title_name,
+                    "in_game_name": ign,
+                    "coordinates": coords,
+                    "discord_user": "Web Form"
+                }
+                log_to_csv(csv_data)
+                # --- immediate webhook on submission (web path) ---
+                send_webhook_notification(csv_data, reminder=False)
                 await save_state()
-    
+
     bot.loop.call_soon_threadsafe(asyncio.create_task, do_booking())
     return redirect(url_for('dashboard'))
 
