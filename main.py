@@ -1,7 +1,7 @@
 # main.py - Complete Code
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands, tasks, app_commands
 import json
 import os
 import logging
@@ -436,6 +436,24 @@ class TitleCog(commands.Cog, name="TitleRequest"):
     async def notify_guardians(self, guild, title_name, message):
         await self.announce(message)
 
+    @app_commands.command(name="claim", description="Claim a title")
+    @app_commands.describe(
+        title="Architect, Governor, Prefect, or General",
+        ign="Your in-game name",
+        coords="Your coordinates X:Y"
+    )
+    @app_commands.choices(
+        title=[
+            app_commands.Choice(name="Architect", value="Architect"),
+            app_commands.Choice(name="Governor", value="Governor"),
+            app_commands.Choice(name="Prefect", value="Prefect"),
+            app_commands.Choice(name="General", value="General"),
+        ]
+    )
+    async def slash_claim(self, interaction: discord.Interaction, title: app_commands.Choice[str], ign: str, coords: str):
+        await self.handle_claim_request(interaction.guild, title.value, ign, coords, interaction.user)
+        await interaction.response.send_message(f"✅ Logged request for **{title.value}** by **{ign}** at {coords}.", ephemeral=True)
+
 ensure_icons_cached()
 
 # --- Flask Web Server ---
@@ -674,6 +692,10 @@ async def on_ready():
     await load_state()
     await initialize_titles()
     await bot.add_cog(TitleCog(bot))
+    try:
+        await bot.tree.sync()
+    except Exception as e:
+        logger.error(f"Slash sync failed: {e}")
     logger.info(f'{bot.user.name} has connected!')
     Thread(target=run_flask_app, daemon=True).start()
 
