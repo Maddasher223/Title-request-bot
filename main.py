@@ -139,6 +139,14 @@ def send_webhook_notification(data):
     except requests.exceptions.RequestException as e:
         logger.error(f"Error sending webhook notification: {e}")
 
+def is_guardian_or_admin(ctx):
+    """Check if the user is a Guardian or an Admin."""
+    if ctx.author.guild_permissions.administrator:
+        return True
+    guardian_role_ids = state.get('config', {}).get('guardian_roles', [])
+    user_role_ids = {role.id for role in ctx.author.roles}
+    return any(role_id in user_role_ids for role_id in guardian_role_ids)
+
 # --- Main Bot Cog ---
 class TitleCog(commands.Cog, name="TitleRequest"):
     def __init__(self, bot):
@@ -276,6 +284,41 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         state.setdefault('config', {})['announcement_channel'] = channel.id
         await save_state()
         await ctx.send(f"Announcement channel set to {channel.mention}.")
+
+    @commands.command(help="Book a 3-hour time slot. Usage: !schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>")
+    async def schedule(self, ctx, *, full_argument: str):
+        try:
+            title_name, ign, date_str, time_str = [p.strip() for p in full_argument.split('|')]
+        except ValueError:
+            await ctx.send("Invalid format. Use `!schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>`")
+            return
+        if title_name not in state['titles']:
+            await ctx.send(f"Title '{title_name}' not found.")
+            return
+        try:
+            schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+            if schedule_time.minute != 0 or schedule_time.hour % 3 != 0:
+                raise ValueError
+        except ValueError:
+            await ctx.send("Invalid time. Use a 3-hour increment (00:00, 03:00, etc.).")
+            return
+        if schedule_time < datetime.now():
+            await ctx.send("Cannot schedule a time in the past.")
+            return
+        schedules = state['schedules'].setdefault(title_name, {})
+        schedule_key = schedule_time.isoformat()
+        if schedule_key in schedules:
+            await ctx.send(f"This slot is already booked by **{schedules[schedule_key]}**.")
+            return
+        for title_schedules in state['schedules'].values():
+            if schedule_key in title_schedules and title_schedules[schedule_key] == ign:
+                await ctx.send(f"**{ign}** has already booked another title for this slot.")
+                return
+        schedules[schedule_key] = ign
+        log_action('schedule_book', ctx.author.id, {'title': title_name, 'time': schedule_key, 'ign': ign})
+        await save_state()
+        await ctx.send(f"Booked '{title_name}' for **{ign}** on {date_str} at {time_str} UTC.")
+        await self.announce(f"🗓️ SCHEDULE UPDATE: A 3-hour slot for **'{title_name}'** was booked by **{ign}** for {date_str} at {time_str} UTC.")
 
     async def release_logic(self, ctx, title_name, reason):
         holder_info = state['titles'][title_name]['holder']
