@@ -73,7 +73,7 @@ def reserve_slot(title_name: str, slot_key: str, reserver_ign: str) -> bool:
     schedules[slot_key] = reserver_ign
     return True
 
-def can_book_slot(title_name: str, slot_start_dt: datetime) -> tuple[bool, str]:
+def can_book_slot(title_name: str, slot_start_dt: datetime):
     """
     Returns (ok, message). A slot is bookable only if it's not already reserved.
     """
@@ -523,46 +523,50 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 
     @commands.command(help="Book a 3-hour time slot. Usage: !schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>")
     async def schedule(self, ctx, *, full_argument: str):
-        # parse inputs
+        # 1) Parse inputs
         try:
             title_name, ign, date_str, time_str = [p.strip() for p in full_argument.split('|')]
         except ValueError:
             await ctx.send("Invalid format. Use `!schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>`")
             return
+
         if title_name not in state['titles']:
             await ctx.send(f"Title '{title_name}' not found.")
             return
+
+        # 2) Parse requested time
         try:
             schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
             if schedule_time.minute != 0 or schedule_time.hour % 3 != 0:
                 raise ValueError
         except ValueError:
-            await ctx.send("Invalid time. Use a 3-hour increment (00:00, 03:00, etc.).")
+            await ctx.send("Invalid time. Use a 3-hour increment (00:00, 03:00, 06:00, etc.).")
             return
+
         if schedule_time < now_utc():
             await ctx.send("Cannot schedule a time in the past.")
             return
 
-        # enforce: a person can’t hold multiple titles at the same exact slot
+        # 3) Compute slot key (e.g., 2025-08-30T15:00:00)
         schedule_key = iso_slot_key_naive(schedule_time)
-        for t_name, t_sched in state.get('schedules', {}).items():
-            if schedule_key in t_sched and t_sched[schedule_key] == ign:
-                await ctx.send(f"**{ign}** has already booked **{t_name}** for this slot.")
-                return
 
-        # enforce: only one booking per title per slot
+        # 4) Check per-title duplicate (only block SAME title + SAME slot)
         schedules = state['schedules'].setdefault(title_name, {})
         if schedule_key in schedules:
             await ctx.send(f"This slot is already booked by **{schedules[schedule_key]}**.")
             return
 
-        # book it
+        # 5) Reserve slot
         schedules[schedule_key] = ign
-        log_action('schedule_book', ctx.author.id, {'title': title_name, 'time': schedule_key, 'ign': ign})
+        log_action('schedule_book', ctx.author.id, {
+            'title': title_name,
+            'time': schedule_key,
+            'ign': ign
+        })
 
-        # auto-assign now if in current slot and title vacant
+        # 6) Auto-assign immediately if slot is current & title is vacant
         try:
-            if in_current_slot(schedule_time) and title_is_vacant_now(title_name):
+            if (schedule_time <= now_utc() < schedule_time + timedelta(hours=SHIFT_HOURS)) and title_is_vacant_now(title_name):
                 end = schedule_time + timedelta(hours=SHIFT_HOURS)
                 state['titles'][title_name].update({
                     'holder': {'name': ign, 'coords': '-', 'discord_id': None},
@@ -570,7 +574,11 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                     'expiry_date': end.isoformat(),
                     'pending_claimant': None
                 })
-                log_action('auto_assign_now', ctx.author.id, {'title': title_name, 'ign': ign, 'start': schedule_time.isoformat()})
+                log_action('auto_assign_now', ctx.author.id, {
+                    'title': title_name,
+                    'ign': ign,
+                    'start': schedule_time.isoformat()
+                })
                 await self.announce(
                     f"⚡ Auto-assigned **{title_name}** to **{ign}** for the current slot "
                     f"({schedule_time.strftime('%H:%M')}–{end.strftime('%H:%M')} UTC)."
@@ -578,9 +586,13 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         except Exception as e:
             logger.error(f"Auto-assign-now failed: {e}")
 
+        # 7) Save and confirm
         await save_state()
         await ctx.send(f"Booked '{title_name}' for **{ign}** on {date_str} at {time_str} UTC.")
-        await self.announce(f"🗓️ SCHEDULE UPDATE: A 3-hour slot for **'{title_name}'** was booked by **{ign}** for {date_str} at {time_str} UTC.")
+        await self.announce(
+            f"🗓️ SCHEDULE UPDATE: A 3-hour slot for **'{title_name}'** was booked by **{ign}** "
+            f"for {date_str} at {time_str} UTC."
+        )
 
     @commands.command(name="unschedule", help='Unschedule a reservation. Usage: !unschedule "Title Name" 2025-08-30T15:00:00')
     async def unschedule(self, ctx, title_name: str, slot_iso: str):
@@ -778,72 +790,87 @@ def cancel_schedule():
 
 @app.route("/book-slot", methods=['POST'])
 def book_slot():
-    title_name = request.form.get('title')
-    ign = request.form.get('ign')
-    coords = request.form.get('coords')
-    date_str = request.form.get('date')
-    time_str = request.form.get('time')
+    # 1) Read form inputs (strip spaces). Coords can be blank.
+    title_name = (request.form.get('title') or '').strip()
+    ign        = (request.form.get('ign') or '').strip()
+    coords     = (request.form.get('coords') or '').strip()
+    date_str   = (request.form.get('date') or '').strip()
+    time_str   = (request.form.get('time') or '').strip()
 
-    if not all([title_name, ign, coords, date_str, time_str]):
-        return "Missing form data.", 400
+    # 2) Validate basic fields
+    if not title_name or not ign or not date_str or not time_str:
+        flash("Missing form data: title, IGN, date, and time are required.")
+        return redirect(url_for("dashboard"))
     if title_name not in REQUESTABLE:
-        return "This title cannot be requested.", 400
+        flash("This title cannot be requested.")
+        return redirect(url_for("dashboard"))
 
-    schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
+    # 3) Parse the requested slot start (UTC)
+    try:
+        schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
+    except ValueError:
+        flash("Time must be in HH:MM (24-hour) format, e.g., 15:00.")
+        return redirect(url_for("dashboard"))
+    if schedule_time < now_utc():
+        flash("Cannot schedule a time in the past.")
+        return redirect(url_for("dashboard"))
 
-    async def do_booking():
-        async with state_lock:
-            # enforce: a person can’t hold multiple titles at the same exact slot
-            schedule_key = iso_slot_key_naive(schedule_time)
-            for t_name, t_sched in state.get('schedules', {}).items():
-                if schedule_key in t_sched and t_sched[schedule_key] == ign:
-                    # silently ignore double-book via web
-                    return
+    # 4) Compute the slot key (e.g., '2025-08-30T15:00:00')
+    schedule_key = iso_slot_key_naive(schedule_time)
 
-            schedules = state['schedules'].setdefault(title_name, {})
-            if schedule_key not in schedules:
-                schedules[schedule_key] = ign
-                log_action('schedule_book_web', 0, {'title': title_name, 'time': schedule_key, 'ign': ign})
+    # 5) Only block duplicates for the SAME title + SAME slot
+    #    (Do NOT block same IGN booking other titles in the same slot.)
+    schedules_for_title = state.setdefault('schedules', {}).setdefault(title_name, {})
+    if schedule_key in schedules_for_title:
+        flash(f"That slot for {title_name} is already reserved by {schedules_for_title[schedule_key]}.")
+        return redirect(url_for("dashboard"))
 
-                # auto assign now if current slot and vacant
-                try:
-                    if in_current_slot(schedule_time) and title_is_vacant_now(title_name):
-                        end = schedule_time + timedelta(hours=SHIFT_HOURS)
-                        state['titles'][title_name].update({
-                            'holder': {'name': ign, 'coords': coords or '-', 'discord_id': 0},
-                            'claim_date': schedule_time.isoformat(),
-                            'expiry_date': end.isoformat(),
-                            'pending_claimant': None
-                        })
-                        log_action('auto_assign_now', 0, {'title': title_name, 'ign': ign, 'start': schedule_time.isoformat()})
-                        try:
-                            send_webhook_notification({
-                                "timestamp": now_utc().isoformat(),
-                                "title_name": title_name,
-                                "in_game_name": ign,
-                                "coordinates": coords or "-",
-                                "discord_user": "Web Form (Auto-Assign)"
-                            }, reminder=False)
-                        except Exception as e:
-                            logger.error(f"Webhook on auto-assign failed: {e}")
-                except Exception as e:
-                    logger.error(f"Auto-assign-now (web) failed: {e}")
+    # 6) Write the reservation
+    schedules_for_title[schedule_key] = ign
+    log_action('schedule_book_web', 0, {'title': title_name, 'time': schedule_key, 'ign': ign})
 
-                # also write a CSV "request"
-                csv_data = {
-                    "timestamp": now_utc().isoformat(),
-                    "title_name": title_name,
-                    "in_game_name": ign,
-                    "coordinates": coords,
-                    "discord_user": "Web Form"
-                }
-                log_to_csv(csv_data)
-                send_webhook_notification(csv_data, reminder=False)
+    # 7) If the slot is the current one and the title is vacant, grant immediately
+    try:
+        if (schedule_time <= now_utc() < schedule_time + timedelta(hours=SHIFT_HOURS)) and title_is_vacant_now(title_name):
+            end = schedule_time + timedelta(hours=SHIFT_HOURS)
+            state['titles'].setdefault(title_name, {})
+            state['titles'][title_name].update({
+                'holder': {'name': ign, 'coords': coords or '-', 'discord_id': 0},
+                'claim_date': schedule_time.isoformat(),
+                'expiry_date': end.isoformat(),
+                'pending_claimant': None
+            })
+            log_action('auto_assign_now', 0, {'title': title_name, 'ign': ign, 'start': schedule_time.isoformat()})
+    except Exception as e:
+        logger.error(f"Auto-assign-now (web) failed: {e}")
 
-                await save_state()
+    # 8) Optional feedback: CSV + webhook
+    csv_data = {
+        "timestamp": now_utc().isoformat(),
+        "title_name": title_name,
+        "in_game_name": ign,
+        "coordinates": coords or "-",
+        "discord_user": "Web Form"
+    }
+    log_to_csv(csv_data)
+    try:
+        send_webhook_notification(csv_data, reminder=False)
+    except Exception as e:
+        logger.error(f"Webhook send failed after web booking: {e}")
 
-    bot.loop.call_soon_threadsafe(asyncio.create_task, do_booking())
-    return redirect(url_for('dashboard'))
+    # 9) Persist state (works whether bot loop is running or not)
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(save_state())
+        else:
+            loop.run_until_complete(save_state())
+    except Exception as e:
+        logger.error(f"save_state in /book-slot failed: {e}")
+
+    # 10) Done
+    flash(f"Reserved {title_name} for {ign} on {date_str} at {time_str} UTC.")
+    return redirect(url_for("dashboard"))
 
 def run_flask_app():
     serve(app, host='0.0.0.0', port=8080)
