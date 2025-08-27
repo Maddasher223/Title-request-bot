@@ -53,9 +53,15 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # --- State and Logging Configuration ---
-STATE_FILE = 'titles_state.json'
-LOG_FILE = 'log.json'
-CSV_FILE = 'requests.csv'
+# Persist state/logs under ./data so restarts keep everything
+BASE_DIR = os.path.dirname(__file__)
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+STATE_FILE = os.path.join(DATA_DIR, "titles_state.json")
+LOG_FILE   = os.path.join(DATA_DIR, "log.json")
+CSV_FILE   = os.path.join(DATA_DIR, "requests.csv")
+
 state = {}
 state_lock = asyncio.Lock()
 
@@ -640,9 +646,11 @@ with open('templates/dashboard.html', 'w') as f:
                         {% for day in days %}
                         <td>
                             {% for title_name, schedule_data in schedules.items() %}
-                                {% set slot_time = day.strftime('%Y-%m-%d') + 'T' + hour + ':00' %}
-                                {% if schedule_data[slot_time] %}
-                                    <div><strong>{{ title_name }}</strong><br>{{ schedule_data[slot_time] }}</div>
+                                {# schedule keys are ISO like 2025-08-30T15:00:00 (we saved .isoformat()) #}
+                                {% set slot_time = day.strftime('%Y-%m-%d') ~ 'T' ~ hour ~ ':00:00' %}
+                                {% set who = schedule_data.get(slot_time) %}
+                                {% if who %}
+                                    <div><strong>{{ title_name }}</strong><br>{{ who }}</div>
                                 {% endif %}
                             {% endfor %}
                         </td>
