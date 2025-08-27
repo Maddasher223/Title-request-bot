@@ -80,50 +80,63 @@
       </div>
 
       <!-- Upcoming Reservations -->
-      <div class="card">
-        <h2>Upcoming Reservations</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Start (UTC)</th><th>Title</th><th>IGN</th><th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for r in upcoming %}
-            <tr>
-              <td>{{ r.slot_iso }}</td>
-              <td>{{ r.title }}</td>
-              <td>{{ r.ign }}</td>
-              <td class="actions">
-                <form method="post" action="{{ url_for('admin_cancel') }}">
-                  <input type="hidden" name="title" value="{{ r.title }}">
-                  <input type="hidden" name="slot" value="{{ r.slot_iso }}">
-                  <button type="submit">Cancel</button>
-                </form>
+<div class="card">
+  <h2>Upcoming Reservations</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Start (UTC)</th><th>Title</th><th>IGN</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in upcoming %}
+      <tr>
+        <td>{{ r.slot_iso }}</td>
+        <td>{{ r.title }}</td>
+        <td>
+          {{ r.ign }}
+          {% if r.approved %}
+            <span class="pill" style="background:#16a34a; margin-left:6px;">Approved</span>
+          {% endif %}
+        </td>
+        <td class="actions">
+          {% if not r.approved %}
+          <form method="post" action="{{ url_for('admin_approve') }}">
+            <input type="hidden" name="title" value="{{ r.title }}">
+            <input type="hidden" name="slot" value="{{ r.slot_iso }}">
+            <button type="submit" title="Mark this reservation as approved">Approve</button>
+          </form>
+          {% endif %}
 
-                <form method="post" action="{{ url_for('admin_assign_now') }}">
-                  <input type="hidden" name="title" value="{{ r.title }}">
-                  <input type="hidden" name="ign" value="{{ r.ign }}">
-                  <input type="hidden" name="slot" value="{{ r.slot_iso }}">
-                  <button type="submit" title="Override: assign immediately">Assign Now</button>
-                </form>
+          <form method="post" action="{{ url_for('admin_cancel') }}">
+            <input type="hidden" name="title" value="{{ r.title }}">
+            <input type="hidden" name="slot" value="{{ r.slot_iso }}">
+            <button type="submit">Cancel</button>
+          </form>
 
-                <form method="post" action="{{ url_for('admin_move') }}">
-                  <input type="hidden" name="title" value="{{ r.title }}">
-                  <input type="hidden" name="slot" value="{{ r.slot_iso }}">
-                  <input type="text" name="new_title" placeholder="New Title (e.g., Architect)" required>
-                  <input type="text" name="new_slot" placeholder="YYYY-MM-DDTHH:MM:00" required>
-                  <button type="submit">Move</button>
-                </form>
-              </td>
-            </tr>
-            {% endfor %}
-            {% if upcoming|length == 0 %}
-            <tr><td colspan="4" class="muted">No future reservations.</td></tr>
-            {% endif %}
-          </tbody>
-        </table>
-      </div>
+          <form method="post" action="{{ url_for('admin_assign_now') }}">
+            <input type="hidden" name="title" value="{{ r.title }}">
+            <input type="hidden" name="ign" value="{{ r.ign }}">
+            <input type="hidden" name="slot" value="{{ r.slot_iso }}">
+            <button type="submit" title="Override: assign immediately">Assign Now</button>
+          </form>
+
+          <form method="post" action="{{ url_for('admin_move') }}">
+            <input type="hidden" name="title" value="{{ r.title }}">
+            <input type="hidden" name="slot" value="{{ r.slot_iso }}">
+            <input type="text" name="new_title" placeholder="New Title (e.g., Architect)" required>
+            <input type="text" name="new_slot" placeholder="YYYY-MM-DDTHH:MM:00" required>
+            <button type="submit">Move</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if upcoming|length == 0 %}
+      <tr><td colspan="4" class="muted">No future reservations.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
 
       <!-- Logs -->
       <div class="card">

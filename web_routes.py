@@ -41,7 +41,6 @@ def register_routes(app, deps):
     set_shift_hours = deps['set_shift_hours']
 
     bot = deps['bot']
-
     UTC = timezone.utc
 
     # ----- Helpers -----
@@ -55,15 +54,6 @@ def register_routes(app, deps):
     def is_admin() -> bool:
         return bool(session.get("is_admin"))
 
-    def admin_required(f):
-        from functools import wraps
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            if not is_admin():
-                return redirect(url_for("admin_login_form"))
-            return f(*args, **kwargs)
-        return wrapper
-
     def get_shift_hours():
         cfg = state.get('config', {})
         val = cfg.get('shift_hours')
@@ -72,16 +62,41 @@ def register_routes(app, deps):
         except Exception:
             return 3
 
+    # ----- ALWAYS ensure state shape before any request -----
+    @app.before_request
+    def _ensure_state_keys():
+        # Top-level keys
+        if 'titles' not in state: state['titles'] = {}
+        if 'schedules' not in state: state['schedules'] = {}
+        if 'config' not in state: state['config'] = {}
+        if 'sent_reminders' not in state: state['sent_reminders'] = []
+        if 'activated_slots' not in state: state['activated_slots'] = {}
+        if 'approvals' not in state: state['approvals'] = {} 
+        # Each title entry
+        titles_dict = state['titles']
+        for title_name, details in TITLES_CATALOG.items():
+            if title_name not in titles_dict:
+                titles_dict[title_name] = {
+                    'holder': None,
+                    'queue': [],
+                    'claim_date': None,
+                    'expiry_date': None,
+                    'pending_claimant': None,
+                    'icon': details.get('image'),
+                    'buffs': details.get('effects')
+                }
+
     # ----- Public pages -----
     @app.route("/")
     def dashboard():
         titles_data = []
+        titles_dict = state.get('titles', {})
         for title_name in ORDERED_TITLES:
-            data = state['titles'].get(title_name, {})
+            data = titles_dict.get(title_name, {})
             holder_info = "None"
             if data.get('holder'):
                 holder = data['holder']
-                holder_info = f"{holder['name']} ({holder.get('coords','-')})"
+                holder_info = f"{holder.get('name','?')} ({holder.get('coords','-')})"
 
             remaining = "N/A"
             if data.get('expiry_date'):
@@ -107,8 +122,7 @@ def register_routes(app, deps):
 
         today = now_utc().date()
         days = [(today + timedelta(days=i)) for i in range(7)]
-        # 3-hour grid; if you change shift hours in settings, the grid still uses 3h cells
-        hours = [f"{h:02d}:00" for h in range(0, 24, 3)]
+        hours = [f"{h:02d}:00" for h in range(0, 24, 3)]  # 3h grid
         schedules = state.get('schedules', {})
         requestable_titles = REQUESTABLE
 
@@ -127,7 +141,7 @@ def register_routes(app, deps):
         csv_path = os.path.join(os.path.dirname(__file__), "data", "requests.csv")
         log_data = []
         if os.path.exists(csv_path):
-            with open(csv_path, 'r', newline='') as f:
+            with open(csv_path, 'r', newline='', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     log_data.append(row)
@@ -205,8 +219,9 @@ def register_routes(app, deps):
 
         # If current slot and vacant, grant now
         try:
-            if (schedule_time <= now_utc() < schedule_time + timedelta(hours=get_shift_hours())) and title_is_vacant_now(title_name):
-                end = schedule_time + timedelta(hours=get_shift_hours())
+            hours = get_shift_hours()
+            if (schedule_time <= now_utc() < schedule_time + timedelta(hours=hours)) and title_is_vacant_now(title_name):
+                end = schedule_time + timedelta(hours=hours)
                 state['titles'].setdefault(title_name, {})
                 state['titles'][title_name].update({
                     'holder': {'name': ign, 'coords': coords or '-', 'discord_id': 0},
@@ -268,24 +283,33 @@ def register_routes(app, deps):
 
         # Active titles
         active = []
+        titles_dict = state.get('titles', {})
         for title_name in ORDERED_TITLES:
-            t = state.get('titles', {}).get(title_name, {})
+            t = titles_dict.get(title_name, {})
             if t and t.get("holder"):
                 exp = parse_iso_utc(t["expiry_date"]) if t.get("expiry_date") else None
                 active.append({
                     "title": title_name,
-                    "holder": t["holder"]["name"],
+                    "holder": t["holder"].get("name", "-"),
                     "coords": t["holder"].get("coords", "-"),
                     "expires": exp.isoformat() if exp else "-"
                 })
 
         # Upcoming reservations + CSV logs
         upcoming = get_all_upcoming_reservations()
+        upcoming = get_all_upcoming_reservations()
+
+        # annotate with approval flags
+        approvals = state.get("approvals", {})
+        for item in upcoming:
+            t = item["title"]
+            k = item["slot_iso"]
+            item["approved"] = bool(approvals.get(t, {}).get(k))
 
         csv_path = os.path.join(os.path.dirname(__file__), "data", "requests.csv")
         logs = []
         if os.path.exists(csv_path):
-            with open(csv_path, 'r', newline='') as f:
+            with open(csv_path, 'r', newline='', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 logs = list(reader)[-200:]
 
@@ -324,10 +348,37 @@ def register_routes(app, deps):
         schedule_on_bot_loop(send_to_log_channel(bot, f"[ADMIN] Force release {title}"))
         flash(f"Force released {title}")
         return redirect(url_for("admin_home"))
+    
+    @app.post("/admin/approve")
+    def admin_approve():
+        if not session.get("is_admin"):
+            return redirect(url_for("admin_login_form"))
+        title = (request.form.get("title") or "").strip()
+        slot  = (request.form.get("slot") or "").strip()
+
+        # Validate reservation exists
+        sched = state.get("schedules", {}).get(title, {})
+        if not (title and slot and slot in sched):
+            flash("Reservation not found")
+            return redirect(url_for("admin_home"))
+
+        state.setdefault("approvals", {}).setdefault(title, {})[slot] = True
+        # Persist + log
+        try:
+            asyncio.run_coroutine_threadsafe(save_state(), bot.loop)
+            asyncio.run_coroutine_threadsafe(
+                send_to_log_channel(bot, f"[ADMIN] Approved {title} @ {slot} for {sched[slot]}"),
+                bot.loop
+            )
+        except Exception:
+            pass
+
+        flash(f"Approved {title} @ {slot}")
+        return redirect(url_for("admin_home"))
 
     @app.post("/admin/cancel")
     def admin_cancel():
-        if not is_admin():
+        if not session.get("is_admin"):
             return redirect(url_for("admin_login_form"))
         title = (request.form.get("title") or "").strip()
         slot = (request.form.get("slot") or "").strip()
@@ -338,8 +389,17 @@ def register_routes(app, deps):
 
         ign = sched[slot]
         del sched[slot]
-        schedule_on_bot_loop(save_state())
-        schedule_on_bot_loop(send_to_log_channel(bot, f"[ADMIN] Cancel {title} @ {slot} (was {ign})"))
+
+        # remove approval flag if present (ADMIN)
+        ap = state.get("approvals", {}).get(title, {})
+        if slot in ap:
+            del ap[slot]
+
+        asyncio.run_coroutine_threadsafe(save_state(), bot.loop)
+        asyncio.run_coroutine_threadsafe(
+            send_to_log_channel(bot, f"[ADMIN] Cancel {title} @ {slot} (was {ign})"),
+            bot.loop
+        )
         flash(f"Cancelled {title} @ {slot} (was {ign})")
         return redirect(url_for("admin_home"))
 
