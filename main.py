@@ -263,49 +263,72 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         self.title_check_loop.start()
 
     @tasks.loop(minutes=1)
-    async def title_check_loop(self):
-        await self.bot.wait_until_ready()
-        now = now_utc()
+async def title_check_loop(self):
+    await self.bot.wait_until_ready()
+    now = now_utc()
 
-        titles_to_release = []
-        for title_name, data in state.get('titles', {}).items():
-            if data.get('holder') and data.get('expiry_date'):
-                if now >= parse_iso_utc(data['expiry_date']):
-                    titles_to_release.append(title_name)
+    # 1) Auto-release expired live holders
+    titles_to_release = []
+    for title_name, data in state.get('titles', {}).items():
+        if data.get('holder') and data.get('expiry_date'):
+            if now >= parse_iso_utc(data['expiry_date']):
+                titles_to_release.append(title_name)
 
-        for title_name in titles_to_release:
-            await self.force_release_logic(title_name, self.bot.user.id, "Title expired.")
+    for title_name in titles_to_release:
+        await self.force_release_logic(title_name, self.bot.user.id, "Title expired.")
 
-        state.setdefault('sent_reminders', [])
-        for title_name, schedule_data in state.get('schedules', {}).items():
-            for iso_time, ign in schedule_data.items():
-                if iso_time in state['sent_reminders']:
-                    continue
+    # 2) T-5 reminder + 3) Auto-activate slot at start if still vacant
+    state.setdefault('sent_reminders', [])
+    state.setdefault('activated_slots', [])   # remember which schedule slots we've activated
 
-                shift_time = parse_iso_utc(iso_time)
-                reminder_time = shift_time - timedelta(minutes=5)
+    for title_name, schedule_data in state.get('schedules', {}).items():
+        for iso_time, ign in schedule_data.items():
+            shift_start = parse_iso_utc(iso_time)
+            shift_end = shift_start + timedelta(hours=SHIFT_HOURS)
 
-                # Webhook reminder T-5
-                if reminder_time <= now < shift_time:
-                    try:
-                        csv_data = {
-                            "timestamp": now_utc().isoformat(),
-                            "title_name": title_name,
-                            "in_game_name": ign if isinstance(ign, str) else str(ign),
-                            "coordinates": "-",
-                            "discord_user": "Scheduler"
-                        }
-                        send_webhook_notification(csv_data, reminder=True)
-                        state['sent_reminders'].append(iso_time)
-                    except Exception as e:
-                        logger.error(f"Could not send shift reminder via webhook: {e}")
+            # 2) Send the T-5 reminder (once)
+            reminder_time = shift_start - timedelta(minutes=5)
+            if (iso_time not in state['sent_reminders']) and (reminder_time <= now < shift_start):
+                try:
+                    csv_data = {
+                        "timestamp": now_utc().isoformat(),
+                        "title_name": title_name,
+                        "in_game_name": ign if isinstance(ign, str) else str(ign),
+                        "coordinates": "-",
+                        "discord_user": "Scheduler"
+                    }
+                    send_webhook_notification(csv_data, reminder=True)
+                    state['sent_reminders'].append(iso_time)
+                except Exception as e:
+                    logger.error(f"Could not send shift reminder via webhook: {e}")
 
-        if titles_to_release or any(
-            iso_time not in state.get('sent_reminders', [])
-            for schedule_data in state.get('schedules', {}).values()
-            for iso_time in schedule_data
-        ):
-            await save_state()
+            # 3) Auto-assign at slot start if the title is vacant (once per slot)
+            #    This is the "bucket becomes holder" step.
+            if (iso_time not in state['activated_slots']) and (shift_start <= now < shift_end):
+                try:
+                    if title_is_vacant_now(title_name):
+                        state['titles'][title_name].update({
+                            'holder': {'name': ign, 'coords': '-', 'discord_id': None},
+                            'claim_date': shift_start.isoformat(),
+                            'expiry_date': shift_end.isoformat(),
+                            'pending_claimant': None
+                        })
+                        log_action('auto_assign_on_start', 0, {
+                            'title': title_name, 'ign': ign,
+                            'start': shift_start.isoformat(), 'end': shift_end.isoformat()
+                        })
+                        state['activated_slots'].append(iso_time)
+
+                        # Optional broadcast so everyone sees it flipped live
+                        await self.announce(
+                            f"✅ Shift started: **{title_name}** auto-assigned to **{ign}** "
+                            f"({shift_start.strftime('%H:%M')}–{shift_end.strftime('%H:%M')} UTC)."
+                        )
+                except Exception as e:
+                    logger.error(f"Auto-assign at slot start failed: {e}")
+
+    # 4) Persist any changes
+    await save_state()
 
     async def handle_claim_request(self, guild, title_name, ign, coords, author):
         if title_name not in REQUESTABLE:
