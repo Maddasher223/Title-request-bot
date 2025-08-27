@@ -100,6 +100,8 @@ ORDERED_TITLES = [
 WEBHOOK_URL = "https://discord.com/api/webhooks/1409980293762253001/s5ffx0R9Tl9fhcvQXAWaqA_LG5b7SsUmpzeBHZOdGGznnLg_KRNwtk6sGvOOhh0oSw10"
 GUARDIAN_ROLE_ID = 1409964411057344512
 TITLE_REQUESTS_CHANNEL_ID = 1409770504696631347
+# Simple admin PIN for /admin (set env ADMIN_PIN, or it defaults to "letmein")
+ADMIN_PIN = os.getenv("ADMIN_PIN", "ARC1041")
 
 # ========= Discord setup =========
 intents = discord.Intents.default()
@@ -666,6 +668,26 @@ def compute_next_reservation_for_title(title_name: str):
     _, k, ign = future[0]
     return (k, ign)
 
+def get_all_upcoming_reservations():
+    """Return a list of dicts for all future reservations across titles."""
+    items = []
+    for title_name, sched in state.get('schedules', {}).items():
+        for slot_key, ign in sched.items():
+            try:
+                dt = parse_iso_utc(slot_key) if ("+" in slot_key) else datetime.fromisoformat(slot_key).replace(tzinfo=UTC)
+            except Exception:
+                continue
+            if dt >= now_utc():
+                items.append({
+                    "title": title_name,
+                    "slot_iso": slot_key,
+                    "slot_dt": dt,
+                    "ign": ign
+                })
+    # sort by datetime
+    items.sort(key=lambda x: x["slot_dt"])
+    return items
+
 @app.route("/")
 def dashboard():
     bot_state = get_bot_state()
@@ -725,6 +747,57 @@ def view_log():
             for row in reader:
                 log_data.append(row)
     return render_template('log.html', logs=reversed(log_data))
+
+@app.route("/admin", methods=["GET"])
+def admin_home():
+    """
+    SUPER SIMPLE ADMIN WIREFRAME (read-only for now).
+    Access: /admin?pin=YOURPIN  (default pin: letmein)
+    """
+    pin = request.args.get("pin", "")
+    if pin != ADMIN_PIN:
+        return "Forbidden (bad or missing pin). Add ?pin=YOURPIN", 403
+
+    # Active titles
+    active = []
+    for title_name in ORDERED_TITLES:
+        t = state.get('titles', {}).get(title_name, {})
+        if t and t.get("holder"):
+            exp = parse_iso_utc(t["expiry_date"]) if t.get("expiry_date") else None
+            active.append({
+                "title": title_name,
+                "holder": t["holder"]["name"],
+                "coords": t["holder"].get("coords", "-"),
+                "expires": exp.isoformat() if exp else "-"
+            })
+
+    # Upcoming reservations (future only)
+    upcoming = get_all_upcoming_reservations()
+
+    # Recent CSV log (limit 200 rows)
+    logs = []
+    if os.path.exists(CSV_FILE):
+        with open(CSV_FILE, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                logs.append(row)
+    logs = logs[-200:]  # last 200
+
+    # Settings (current)
+    cfg = state.get('config', {})
+    current_settings = {
+        "announcement_channel": cfg.get("announcement_channel"),
+        "log_channel": cfg.get("log_channel"),
+        "shift_hours": SHIFT_HOURS,
+    }
+
+    return render_template(
+        "admin.html",
+        active_titles=active,
+        upcoming=upcoming,
+        logs=reversed(logs),
+        settings=current_settings
+    )
 
 @app.post("/cancel")
 def cancel_schedule():
@@ -1022,6 +1095,151 @@ with open('templates/log.html', 'w') as f:
             </tbody>
         </table>
     </div>
+</body>
+</html>
+""")
+
+# Admin wireframe page
+with open('templates/admin.html', 'w') as f:
+    f.write("""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Admin · Title Requestor</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='icons/title-requestor.png') }}">
+  <style>
+    body { font-family: sans-serif; background:#121417; color:#e7e9ea; margin: 2rem; }
+    .container { max-width: 1400px; margin: 0 auto; }
+    h1, h2 { margin: 0 0 10px 0; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .card { background:#1b1f24; border:1px solid #2a2f36; border-radius:10px; padding:16px; }
+    table { width:100%; border-collapse: collapse; margin-top:8px; }
+    th, td { border:1px solid #2a2f36; padding:8px; text-align:left; }
+    th { background:#20252b; }
+    .pill { display:inline-block; font-size:12px; padding:2px 6px; border-radius:999px; background:#2f6feb; color:#fff; }
+    .row { display:flex; gap:10px; align-items:center; }
+    input, select, button { padding:8px; border-radius:6px; border:1px solid #2a2f36; background:#0f1114; color:#e7e9ea; }
+    button { background:#2f6feb; cursor:pointer; font-weight:600; }
+    a { color:#8ab4f8; }
+    .muted { opacity:.75; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Admin Dashboard</h1>
+    <p class="muted">This is a wireframe (read-only). Buttons are placeholders until backend endpoints are added.</p>
+
+    <div class="grid">
+      <!-- Active Titles -->
+      <div class="card">
+        <h2>Active Titles <span class="pill">{{ active_titles|length }}</span></h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Title</th><th>Holder</th><th>Coords</th><th>Expires</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in active_titles %}
+            <tr>
+              <td>{{ t.title }}</td>
+              <td>{{ t.holder }}</td>
+              <td>{{ t.coords }}</td>
+              <td>{{ t.expires }}</td>
+              <td>
+                <!-- placeholder -->
+                <button disabled title="placeholder">Force Release</button>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if active_titles|length == 0 %}
+            <tr><td colspan="5" class="muted">No active titles.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Upcoming Reservations -->
+      <div class="card">
+        <h2>Upcoming Reservations</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Start (UTC)</th><th>Title</th><th>IGN</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in upcoming %}
+            <tr>
+              <td>{{ r.slot_iso }}</td>
+              <td>{{ r.title }}</td>
+              <td>{{ r.ign }}</td>
+              <td class="row">
+                <!-- placeholders -->
+                <button disabled title="placeholder">Cancel</button>
+                <button disabled title="placeholder">Assign Now</button>
+                <button disabled title="placeholder">Move…</button>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if upcoming|length == 0 %}
+            <tr><td colspan="4" class="muted">No future reservations.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Logs -->
+      <div class="card">
+        <h2>Recent Activity (CSV)</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th><th>Title</th><th>IGN</th><th>Coords</th><th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in logs %}
+            <tr>
+              <td>{{ row.timestamp }}</td>
+              <td>{{ row.title_name }}</td>
+              <td>{{ row.in_game_name }}</td>
+              <td>{{ row.coordinates }}</td>
+              <td>{{ row.discord_user }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p class="muted">This reads the last 200 lines from <code>data/requests.csv</code>.</p>
+      </div>
+
+      <!-- Settings -->
+      <div class="card">
+        <h2>Settings</h2>
+        <div class="row">
+          <label>Announcement Channel:</label>
+          <input type="text" value="{{ settings.announcement_channel or '' }}" readonly>
+          <button disabled title="Set via !set_announce">Update</button>
+        </div>
+        <div class="row" style="margin-top:6px;">
+          <label>Log Channel:</label>
+          <input type="text" value="{{ settings.log_channel or '' }}" readonly>
+          <button disabled title="Set via !set_log">Update</button>
+        </div>
+        <div class="row" style="margin-top:6px;">
+          <label>Shift Duration (hrs):</label>
+          <input type="number" value="{{ settings.shift_hours }}" min="1" max="24" readonly>
+          <button disabled title="Placeholder">Save</button>
+        </div>
+        <p class="muted" style="margin-top:10px;">
+          Channel settings are currently configured by Discord commands:<br>
+          <code>!set_announce #channel</code> and <code>!set_log #channel</code>.
+        </p>
+      </div>
+    </div>
+
+    <p style="margin-top:16px;"><a href="/">← Back to Dashboard</a></p>
+  </div>
 </body>
 </html>
 """)
