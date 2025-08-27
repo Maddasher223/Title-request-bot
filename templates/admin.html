@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Admin · Title Requestor</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='icons/title-requestor.png') }}">
+  <style>
+    :root {
+      --bg:#121417; --card:#1b1f24; --border:#2a2f36; --head:#20252b; --text:#e7e9ea;
+      --muted:#a0a6ad; --primary:#2f6feb; --link:#8ab4f8;
+    }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); margin:2rem; }
+    .container { max-width: 1400px; margin: 0 auto; }
+    h1, h2 { margin:0 0 10px 0; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:20px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; }
+    table { width:100%; border-collapse: collapse; margin-top:8px; }
+    th, td { border:1px solid var(--border); padding:8px; text-align:left; vertical-align: top; }
+    th { background:var(--head); }
+    .pill { display:inline-block; font-size:12px; padding:2px 6px; border-radius:999px; background:var(--primary); color:#fff; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+    input, select, button { padding:8px; border-radius:6px; border:1px solid var(--border); background:#0f1114; color:var(--text); }
+    input[type="text"], input[type="number"] { min-width: 180px; }
+    button { background:var(--primary); cursor:pointer; font-weight:600; border:none; }
+    a { color:var(--link); }
+    .muted { color:var(--muted); font-size:12px; }
+    .actions form { display:inline-block; margin-right:6px; }
+    .spacer { height:10px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="topbar">
+      <h1>Admin Dashboard</h1>
+      <div>
+        <a href="{{ url_for('admin_logout') }}">Logout</a>
+      </div>
+    </div>
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <ul>
+          {% for m in messages %}
+            <li class="muted">{{ m }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    <div class="grid">
+      <!-- Active Titles -->
+      <div class="card">
+        <h2>Active Titles <span class="pill">{{ active_titles|length }}</span></h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Title</th><th>Holder</th><th>Coords</th><th>Expires</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in active_titles %}
+            <tr>
+              <td>{{ t.title }}</td>
+              <td>{{ t.holder }}</td>
+              <td>{{ t.coords }}</td>
+              <td>{{ t.expires }}</td>
+              <td class="actions">
+                <form method="post" action="{{ url_for('admin_force_release') }}">
+                  <input type="hidden" name="title" value="{{ t.title }}">
+                  <button type="submit" title="Immediately free this title">Force Release</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if active_titles|length == 0 %}
+            <tr><td colspan="5" class="muted">No active titles.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Upcoming Reservations -->
+      <div class="card">
+        <h2>Upcoming Reservations</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Start (UTC)</th><th>Title</th><th>IGN</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in upcoming %}
+            <tr>
+              <td>{{ r.slot_iso }}</td>
+              <td>{{ r.title }}</td>
+              <td>{{ r.ign }}</td>
+              <td class="actions">
+                <form method="post" action="{{ url_for('admin_cancel') }}">
+                  <input type="hidden" name="title" value="{{ r.title }}">
+                  <input type="hidden" name="slot" value="{{ r.slot_iso }}">
+                  <button type="submit">Cancel</button>
+                </form>
+
+                <form method="post" action="{{ url_for('admin_assign_now') }}">
+                  <input type="hidden" name="title" value="{{ r.title }}">
+                  <input type="hidden" name="ign" value="{{ r.ign }}">
+                  <input type="hidden" name="slot" value="{{ r.slot_iso }}">
+                  <button type="submit" title="Override: assign immediately">Assign Now</button>
+                </form>
+
+                <form method="post" action="{{ url_for('admin_move') }}">
+                  <input type="hidden" name="title" value="{{ r.title }}">
+                  <input type="hidden" name="slot" value="{{ r.slot_iso }}">
+                  <input type="text" name="new_title" placeholder="New Title (e.g., Architect)" required>
+                  <input type="text" name="new_slot" placeholder="YYYY-MM-DDTHH:MM:00" required>
+                  <button type="submit">Move</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if upcoming|length == 0 %}
+            <tr><td colspan="4" class="muted">No future reservations.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Logs -->
+      <div class="card">
+        <h2>Recent Activity (CSV)</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th><th>Title</th><th>IGN</th><th>Coords</th><th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in logs %}
+            <tr>
+              <td>{{ row.timestamp }}</td>
+              <td>{{ row.title_name }}</td>
+              <td>{{ row.in_game_name }}</td>
+              <td>{{ row.coordinates }}</td>
+              <td>{{ row.discord_user }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p class="muted">Showing the latest entries from <code>data/requests.csv</code>.</p>
+      </div>
+
+      <!-- Settings -->
+      <div class="card">
+        <h2>Settings</h2>
+        <form method="post" action="{{ url_for('admin_settings') }}">
+          <div class="row">
+            <label>Announcement Channel ID</label>
+            <input type="text" name="announce_channel" value="{{ settings.announcement_channel or '' }}">
+          </div>
+          <div class="row">
+            <label>Log Channel ID</label>
+            <input type="text" name="log_channel" value="{{ settings.log_channel or '' }}">
+          </div>
+          <div class="row">
+            <label>Shift Duration (hours)</label>
+            <input type="number" name="shift_hours" value="{{ settings.shift_hours }}" min="1" max="24">
+          </div>
+          <div class="spacer"></div>
+          <button type="submit">Save Settings</button>
+        </form>
+        <p class="muted" style="margin-top:10px;">
+          You can also set via Discord: <code>!set_announce #channel</code>, <code>!set_log #channel</code>.
+        </p>
+      </div>
+    </div>
+
+    <p style="margin-top:16px;"><a href="{{ url_for('dashboard') }}">← Back to Dashboard</a></p>
+  </div>
+</body>
+</html>
