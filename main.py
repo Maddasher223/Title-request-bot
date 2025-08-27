@@ -8,7 +8,7 @@ import asyncio
 import requests
 from threading import Thread
 from datetime import datetime, timedelta, timezone
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, session
 from waitress import serve
 
 import discord
@@ -688,6 +688,24 @@ def get_all_upcoming_reservations():
     items.sort(key=lambda x: x["slot_dt"])
     return items
 
+# ----- Admin auth helpers -----
+def is_admin() -> bool:
+    return bool(session.get("is_admin"))
+
+def require_admin():
+    if not is_admin():
+        return redirect(url_for("admin_login_form"))
+
+def admin_required(f):
+    # minimal decorator without external libs
+    from functools import wraps
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not is_admin():
+            return redirect(url_for("admin_login_form"))
+        return f(*args, **kwargs)
+    return wrapper
+
 @app.route("/")
 def dashboard():
     bot_state = get_bot_state()
@@ -748,7 +766,28 @@ def view_log():
                 log_data.append(row)
     return render_template('log.html', logs=reversed(log_data))
 
+@app.get("/admin/login")
+def admin_login_form():
+    return render_template("admin_login.html")
+
+@app.post("/admin/login")
+def admin_login_submit():
+    pin = (request.form.get("pin") or "").strip()
+    if pin == ADMIN_PIN:
+        session["is_admin"] = True
+        flash("Welcome, admin.")
+        return redirect(url_for("admin_home"))
+    flash("Incorrect PIN.")
+    return redirect(url_for("admin_login_form"))
+
+@app.get("/admin/logout")
+def admin_logout():
+    session.pop("is_admin", None)
+    flash("Logged out.")
+    return redirect(url_for("dashboard"))
+
 @app.route("/admin", methods=["GET"])
+@admin_required
 def admin_home():
     """
     SUPER SIMPLE ADMIN WIREFRAME (read-only for now).
@@ -763,6 +802,7 @@ from flask import request, redirect, url_for
 # --- ADMIN ACTIONS ---
 
 @app.post("/admin/force-release")
+@admin_required
 def admin_force_release():
     pin = request.args.get("pin", "")
     if pin != ADMIN_PIN:
@@ -785,6 +825,7 @@ def admin_force_release():
 
 
 @app.post("/admin/cancel")
+@admin_required
 def admin_cancel():
     pin = request.args.get("pin", "")
     if pin != ADMIN_PIN:
@@ -804,6 +845,7 @@ def admin_cancel():
 
 
 @app.post("/admin/assign-now")
+@admin_required
 def admin_assign_now():
     pin = request.args.get("pin", "")
     if pin != ADMIN_PIN:
@@ -830,6 +872,7 @@ def admin_assign_now():
 
 
 @app.post("/admin/move")
+@admin_required
 def admin_move():
     pin = request.args.get("pin", "")
     if pin != ADMIN_PIN:
@@ -856,6 +899,7 @@ def admin_move():
 
 
 @app.post("/admin/settings")
+@admin_required
 def admin_settings():
     pin = request.args.get("pin", "")
     if pin != ADMIN_PIN:
@@ -1038,7 +1082,8 @@ def book_slot():
     return redirect(url_for("dashboard"))
 
 def run_flask_app():
-    serve(app, host='0.0.0.0', port=8080)
+    port = int(os.getenv("PORT", "8080"))
+    serve(app, host='0.0.0.0', port=port)
 
 # ========= Templates (written if missing) =========
 if not os.path.exists('templates'):
@@ -1163,7 +1208,10 @@ with open('templates/dashboard.html', 'w') as f:
             </table>
         </div>
 
-        <p style="text-align: center; margin-top: 2em;"><a href="/log">View Full Request Log</a></p>
+        <div style="text-align:center; margin-top:2em;">
+          <a href="{{ url_for('view_log') }}">View Full Request Log</a> ·
+          <a href="{{ url_for('admin_login_form') }}">Admin Dashboard</a>
+        </div>
     </div>
 </body>
 </html>
@@ -1266,7 +1314,7 @@ with open('templates/admin.html', 'w') as f:
               <td>{{ t.coords }}</td>
               <td>{{ t.expires }}</td>
               <td class="actions">
-                <form method="post" action="{{ url_for('admin_force_release', pin=request.args.get('pin')) }}">
+                <form method="post" action="{{ url_for('admin_force_release') }}">
                     <input type="hidden" name="title" value="{{ t.title }}">
                     <button type="submit" title="Immediately free this title">Force Release</button>
                 </form>
@@ -1297,14 +1345,14 @@ with open('templates/admin.html', 'w') as f:
               <td>{{ r.ign }}</td>
               <td class="actions">
                 <!-- Cancel -->
-                <form method="post" action="{{ url_for('admin_cancel', pin=request.args.get('pin')) }}">
+                <form method="post" action="{{ url_for('admin_cancel') }}">
                     <input type="hidden" name="title" value="{{ r.title }}">
                     <input type="hidden" name="slot" value="{{ r.slot_iso }}">
                     <button type="submit">Cancel</button>
                 </form>
 
                 <!-- Assign Now -->
-                <form method="post" action="{{ url_for('admin_assign_now', pin=request.args.get('pin')) }}">
+                <form method="post" action="{{ url_for('admin_assign_now') }}">
                     <input type="hidden" name="title" value="{{ r.title }}">
                     <input type="hidden" name="ign" value="{{ r.ign }}">
                     <input type="hidden" name="slot" value="{{ r.slot_iso }}">
@@ -1312,7 +1360,7 @@ with open('templates/admin.html', 'w') as f:
                 </form>
 
                 <!-- Move -->
-                <form method="post" action="{{ url_for('admin_move', pin=request.args.get('pin')) }}">
+                <form method="post" action="{{ url_for('admin_move') }}">
                     <input type="hidden" name="title" value="{{ r.title }}">
                     <input type="hidden" name="slot" value="{{ r.slot_iso }}">
                     <input type="text" name="new_title" placeholder="New Title (e.g., Architect)" required>
@@ -1356,7 +1404,7 @@ with open('templates/admin.html', 'w') as f:
       <!-- Settings -->
       <div class="card">
         <h2>Settings</h2>
-        <form method="post" action="{{ url_for('admin_settings', pin=request.args.get('pin')) }}">
+        <form method="post" action="{{ url_for('admin_settings') }}">
           <div class="row">
             <label>Announcement Channel ID:</label>
             <input type="text" name="announce_channel" value="{{ settings.announcement_channel or '' }}">
