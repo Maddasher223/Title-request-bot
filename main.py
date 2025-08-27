@@ -8,6 +8,7 @@ import asyncio
 import requests
 from threading import Thread
 from datetime import datetime, timedelta, timezone
+from web_routes import register_routes
 
 from flask import Flask
 from waitress import serve
