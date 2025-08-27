@@ -139,13 +139,6 @@ def send_webhook_notification(data):
     except requests.exceptions.RequestException as e:
         logger.error(f"Error sending webhook notification: {e}")
 
-def is_guardian_or_admin(ctx):
-    if ctx.author.guild_permissions.administrator:
-        return True
-    guardian_role_ids = state.get('config', {}).get('guardian_roles', [])
-    user_role_ids = {role.id for role in ctx.author.roles}
-    return any(role_id in user_role_ids for role_id in guardian_role_ids)
-
 # --- Main Bot Cog ---
 class TitleCog(commands.Cog, name="TitleRequest"):
     def __init__(self, bot):
@@ -157,7 +150,6 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         await self.bot.wait_until_ready()
         now = datetime.utcnow()
         
-        # --- Handle Expired Titles ---
         titles_to_release = []
         for title_name, data in state.get('titles', {}).items():
             if data.get('holder') and data.get('expiry_date'):
@@ -167,12 +159,10 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         for title_name in titles_to_release:
             await self.force_release_logic(title_name, self.bot.user.id, "Title expired.")
 
-        # --- Handle Shift Reminders ---
         state.setdefault('sent_reminders', [])
         for title_name, schedule_data in state.get('schedules', {}).items():
             for iso_time, ign in schedule_data.items():
-                if iso_time in state['sent_reminders']:
-                    continue
+                if iso_time in state['sent_reminders']: continue
                 
                 shift_time = datetime.fromisoformat(iso_time)
                 reminder_time = shift_time - timedelta(minutes=5)
@@ -185,7 +175,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                     except (discord.NotFound, discord.Forbidden) as e:
                         logger.error(f"Could not send shift reminder: {e}")
 
-        if titles_to_release or state.get('sent_reminders'):
+        if titles_to_release or any(iso_time not in state.get('sent_reminders', []) for schedule_data in state.get('schedules', {}).values() for iso_time in schedule_data):
             await save_state()
 
     @commands.command(help="Claim a title. Usage: !claim <Title Name> | <In-Game Name> | <X:Y Coords>")
@@ -196,16 +186,12 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             await ctx.send("Invalid format. Use `!claim <Title Name> | <In-Game Name> | <X:Y Coords>`")
             return
 
-        if title_name not in TITLES_CATALOG:
-            await ctx.send(f"Title '{title_name}' does not exist.")
-            return
-        
         if title_name not in REQUESTABLE:
             await ctx.send(f"The title '{title_name}' is not requestable.")
             return
 
         if any(t.get('holder') and t['holder']['name'] == ign for t in state['titles'].values()):
-            await ctx.send("You already hold a title. Please have it released before claiming another.")
+            await ctx.send("You already hold a title.")
             return
 
         title = state['titles'][title_name]
@@ -221,10 +207,10 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             log_to_csv(csv_data)
             send_webhook_notification(csv_data)
 
-            guardian_message = (f"👑 **Title Request:** Player **{ign}** ({coords}) has requested to claim **'{title_name}'**. "
-                                f"A guardian must approve with `!assign {title_name} | {ign}`.")
+            guardian_message = (f"👑 **Title Request:** Player **{ign}** ({coords}) has requested **'{title_name}'**. "
+                                f"Approve with `!assign {title_name} | {ign}`.")
             await self.notify_guardians(ctx.guild, title_name, guardian_message)
-            await ctx.send(f"Your request for '{title_name}' has been submitted for player **{ign}**. A guardian must approve it.")
+            await ctx.send(f"Your request for '{title_name}' for player **{ign}** has been submitted.")
         else:
             title.setdefault('queue', []).append(claimant_data)
             log_action('queue_join', ctx.author.id, {'title': title_name, 'ign': ign})
@@ -236,20 +222,19 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         embed = discord.Embed(title="📜 Title Status", color=discord.Color.blue())
         for title_name in ORDERED_TITLES:
             data = state['titles'].get(title_name, {})
-            status = ""
+            details = TITLES_CATALOG.get(title_name, {})
+            status = f"*{details.get('effects', 'No description.')}*\n"
             if data.get('holder'):
                 holder = data['holder']
                 holder_name = f"{holder['name']} ({holder['coords']})"
                 expiry = datetime.fromisoformat(data['expiry_date'])
                 remaining = expiry - datetime.utcnow()
-                status = f"**Held by:** {holder_name}\n*Expires in: {str(timedelta(seconds=int(remaining.total_seconds())))}*"
-                if data.get('queue'):
-                    status += f"\n*Queue: {len(data['queue'])}*"
+                status += f"**Held by:** {holder_name}\n*Expires in: {str(timedelta(seconds=int(remaining.total_seconds())))}*"
             elif data.get('pending_claimant'):
                 claimant = data['pending_claimant']
-                status = f"**Pending Approval for:** {claimant['name']} ({claimant['coords']})"
+                status += f"**Pending Approval for:** {claimant['name']} ({claimant['coords']})"
             else:
-                status = "**Status:** Available"
+                status += "**Status:** Available"
             embed.add_field(name=f"👑 {title_name}", value=status, inline=False)
         await ctx.send(embed=embed)
 
@@ -291,41 +276,6 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         state.setdefault('config', {})['announcement_channel'] = channel.id
         await save_state()
         await ctx.send(f"Announcement channel set to {channel.mention}.")
-
-    @commands.command(help="Book a 3-hour time slot. Usage: !schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>")
-    async def schedule(self, ctx, *, full_argument: str):
-        try:
-            title_name, ign, date_str, time_str = [p.strip() for p in full_argument.split('|')]
-        except ValueError:
-            await ctx.send("Invalid format. Use `!schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>`")
-            return
-        if title_name not in state['titles']:
-            await ctx.send(f"Title '{title_name}' not found.")
-            return
-        try:
-            schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-            if schedule_time.minute != 0 or schedule_time.hour % 3 != 0:
-                raise ValueError
-        except ValueError:
-            await ctx.send("Invalid time. Use a 3-hour increment (00:00, 03:00, etc.).")
-            return
-        if schedule_time < datetime.now():
-            await ctx.send("Cannot schedule a time in the past.")
-            return
-        schedules = state['schedules'].setdefault(title_name, {})
-        schedule_key = schedule_time.isoformat()
-        if schedule_key in schedules:
-            await ctx.send(f"This slot is already booked by **{schedules[schedule_key]}**.")
-            return
-        for title_schedules in state['schedules'].values():
-            if schedule_key in title_schedules and title_schedules[schedule_key] == ign:
-                await ctx.send(f"**{ign}** has already booked another title for this slot.")
-                return
-        schedules[schedule_key] = ign
-        log_action('schedule_book', ctx.author.id, {'title': title_name, 'time': schedule_key, 'ign': ign})
-        await save_state()
-        await ctx.send(f"Booked '{title_name}' for **{ign}** on {date_str} at {time_str} UTC.")
-        await self.announce(f"🗓️ SCHEDULE UPDATE: A 3-hour slot for **'{title_name}'** was booked by **{ign}** for {date_str} at {time_str} UTC.")
 
     async def release_logic(self, ctx, title_name, reason):
         holder_info = state['titles'][title_name]['holder']
@@ -403,8 +353,19 @@ def dashboard():
     days = [(today + timedelta(days=i)) for i in range(7)]
     hours = [f"{h:02d}:00" for h in range(0, 24, 3)]
     schedules = bot_state.get('schedules', {})
+    requestable_titles = REQUESTABLE
 
-    return render_template('dashboard.html', titles=titles_data, days=days, hours=hours, schedules=schedules, today=today.strftime('%Y-%m-%d'))
+    return render_template('dashboard.html', titles=titles_data, days=days, hours=hours, schedules=schedules, today=today.strftime('%Y-%m-%d'), requestable_titles=requestable_titles)
+
+@app.route("/log")
+def view_log():
+    log_data = []
+    if os.path.exists(CSV_FILE):
+        with open(CSV_FILE, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                log_data.append(row)
+    return render_template('log.html', logs=reversed(log_data))
 
 @app.route("/book-slot", methods=['POST'])
 def book_slot():
@@ -431,10 +392,6 @@ def book_slot():
     bot.loop.call_soon_threadsafe(asyncio.create_task, do_booking())
     return redirect(url_for('dashboard'))
 
-@app.route('/requests.csv')
-def download_csv():
-    return send_from_directory(os.getcwd(), CSV_FILE, as_attachment=True)
-
 def run_flask_app():
     serve(app, host='0.0.0.0', port=8080)
 
@@ -445,41 +402,50 @@ with open('templates/dashboard.html', 'w') as f:
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8"><title>Title Dashboard</title>
+    <meta charset="UTF-8"><title>Title Requestor</title>
     <style>
         body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
         .container { max-width: 1400px; margin: auto; }
-        .title-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
-        .title-card { background-color: #2f3136; border-radius: 8px; padding: 15px; }
+        .title-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+        .title-card { background-color: #2f3136; border-radius: 8px; padding: 15px; border-left: 5px solid #7289da; }
         .form-card, .schedule-card { background-color: #2f3136; padding: 20px; border-radius: 8px; margin-top: 2em; }
+        h1, h2 { color: #ffffff; }
+        h3 { display: flex; align-items: center; margin-top: 0; }
+        h3 img { margin-right: 10px; }
         table { width: 100%; border-collapse: collapse; margin-top: 1em; }
         th, td { border: 1px solid #40444b; padding: 8px; text-align: center; }
-        input, select, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #555; }
+        input, select, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #555; background-color: #40444b; color: #dcddde; }
+        button { background-color: #7289da; cursor: pointer; font-weight: bold; }
+        a { color: #7289da; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>👑 Title Status</h1>
+        <h1>👑 Title Requestor</h1>
         <div class="title-grid">
             {% for title in titles %}
             <div class="title-card">
-                <h3><img src="{{ title.icon }}" width="24" height="24" style="vertical-align: middle; margin-right: 10px;">{{ title.name }}</h3>
+                <h3><img src="{{ title.icon }}" width="24" height="24">{{ title.name }}</h3>
+                <p><em>{{ title.buffs }}</em></p>
                 <p><strong>Holder:</strong> {{ title.holder }}</p>
                 <p><strong>Expires:</strong> {{ title.expires_in }}</p>
-                <p><em>{{ title.buffs }}</em></p>
             </div>
             {% endfor %}
         </div>
 
         <div class="form-card">
-            <h2>Book a Slot</h2>
+            <h2>Claim a Temple Title</h2>
             <form action="/book-slot" method="POST">
-                <select name="title" required>{% for title_name in G_ORDERED_TITLES %}<option value="{{ title_name }}">{{ title_name }}</option>{% endfor %}</select>
+                <select name="title" required>
+                    {% for title_name in requestable_titles %}
+                    <option value="{{ title_name }}">{{ title_name }}</option>
+                    {% endfor %}
+                </select>
                 <input type="text" name="ign" placeholder="In-Game Name" required>
                 <input type="text" name="coords" placeholder="X:Y Coordinates" required>
                 <input type="date" name="date" value="{{ today }}" required>
                 <select name="time" required>{% for hour in hours %}<option value="{{ hour }}">{{ hour }}</option>{% endfor %}</select>
-                <button type="submit">Book Slot</button>
+                <button type="submit">Submit</button>
             </form>
         </div>
 
@@ -506,7 +472,53 @@ with open('templates/dashboard.html', 'w') as f:
                 </tbody>
             </table>
         </div>
-        <p style="text-align: center; margin-top: 2em;"><a href="/requests.csv">Download Full Request Log</a></p>
+        <p style="text-align: center; margin-top: 2em;"><a href="/log">View Full Request Log</a></p>
+    </div>
+</body>
+</html>
+""")
+with open('templates/log.html', 'w') as f:
+    f.write("""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"><title>Request Log</title>
+    <style>
+        body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
+        .container { max-width: 1200px; margin: auto; }
+        h1 { color: #ffffff; }
+        table { width: 100%; border-collapse: collapse; margin-top: 1em; }
+        th, td { border: 1px solid #40444b; padding: 8px; text-align: left; }
+        th { background-color: #2f3136; }
+        a { color: #7289da; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📜 Request Log</h1>
+        <p><a href="/">Back to Dashboard</a></p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Title</th>
+                    <th>In-Game Name</th>
+                    <th>Coordinates</th>
+                    <th>Submitted By</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in logs %}
+                <tr>
+                    <td>{{ log.timestamp }}</td>
+                    <td>{{ log.title_name }}</td>
+                    <td>{{ log.in_game_name }}</td>
+                    <td>{{ log.coordinates }}</td>
+                    <td>{{ log.discord_user }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
 </body>
 </html>
