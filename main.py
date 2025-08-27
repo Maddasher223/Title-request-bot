@@ -1,4 +1,4 @@
-# main.py - Complete Code
+# main.py - Complete Code (fixed)
 
 import discord
 from discord.ext import commands, tasks
@@ -6,24 +6,50 @@ from discord import app_commands
 import json
 import os
 import logging
-from datetime import datetime, timedelta
 import asyncio
 from threading import Thread
-from flask import Flask, render_template, request, redirect, url_for, send_from_directory
+from flask import Flask, render_template, request, redirect, url_for
 import csv
 from waitress import serve
 import requests
-from datetime import datetime, timedelta, UTC  # make sure this import exists
+from datetime import datetime, timedelta, UTC  # timezone-aware utilities
 
-def now_utc():
+# ---------- Time helpers ----------
+def now_utc() -> datetime:
     return datetime.now(UTC)
 
 def parse_iso_utc(s: str) -> datetime:
-    """Parse ISO strings you saved before; make them UTC-aware if they were naive."""
-    dt = parse_iso_utc(s)
+    """Parse ISO strings; make them UTC-aware if they were saved naive."""
+    dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt
+
+SHIFT_HOURS = 3
+def slot_key(dt: datetime) -> str:
+    """Normalize to hour, return ISO string with tzinfo if missing."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.replace(minute=0, second=0, microsecond=0).isoformat()
+
+def in_current_slot(slot_start: datetime) -> bool:
+    now = now_utc()
+    end = slot_start + timedelta(hours=SHIFT_HOURS)
+    return slot_start <= now < end
+
+def title_is_vacant_now(title_name: str) -> bool:
+    t = state['titles'].get(title_name, {})
+    holder = t.get('holder')
+    if not holder:
+        return True
+    exp = t.get('expiry_date')
+    if exp:
+        try:
+            if now_utc() >= parse_iso_utc(exp):
+                return True
+        except Exception:
+            pass
+    return False
 
 # --- Static Title Configuration ---
 TITLES_CATALOG = {
@@ -76,7 +102,13 @@ async def initialize_titles():
         state.setdefault('titles', {})
         for title_name, details in TITLES_CATALOG.items():
             if title_name not in state['titles']:
-                state['titles'][title_name] = {'holder': None, 'queue': [], 'claim_date': None, 'expiry_date': None, 'pending_claimant': None}
+                state['titles'][title_name] = {
+                    'holder': None,
+                    'queue': [],
+                    'claim_date': None,
+                    'expiry_date': None,
+                    'pending_claimant': None
+                }
             state['titles'][title_name]['icon'] = details['image']
             state['titles'][title_name]['buffs'] = details['effects']
     await save_state()
@@ -115,8 +147,10 @@ def log_action(action, user_id, details):
         logs = []
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, 'r') as f:
-                try: logs = json.load(f)
-                except json.JSONDecodeError: pass
+                try:
+                    logs = json.load(f)
+                except json.JSONDecodeError:
+                    pass
         logs.append(log_entry)
         with open(LOG_FILE, 'w') as f:
             json.dump(logs, f, indent=4)
@@ -135,7 +169,7 @@ def log_to_csv(request_data):
     except IOError as e:
         logger.error(f"Error writing to CSV file: {e}")
 
-        # Map each title to a local filename in static/icons/
+# Map each title to a local filename in static/icons/
 ICON_FILES = {
     "Guardian of Harmony": "guardian_harmony.png",
     "Guardian of Air": "guardian_air.png",
@@ -148,7 +182,7 @@ ICON_FILES = {
     "Prefect": "prefect.png",
 }
 
-# Original sources (without the expiring query params)
+# Original sources (without expiring query params)
 ICON_SOURCES = {
     "Guardian of Harmony": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793727018569758/guardian_harmony.png",
     "Guardian of Air": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793463817605181/guardian_air.png",
@@ -232,33 +266,33 @@ class TitleCog(commands.Cog, name="TitleRequest"):
     async def title_check_loop(self):
         await self.bot.wait_until_ready()
         now = now_utc()
-        
+
         titles_to_release = []
         for title_name, data in state.get('titles', {}).items():
             if data.get('holder') and data.get('expiry_date'):
                 if now >= parse_iso_utc(data['expiry_date']):
                     titles_to_release.append(title_name)
-        
+
         for title_name in titles_to_release:
             await self.force_release_logic(title_name, self.bot.user.id, "Title expired.")
 
         state.setdefault('sent_reminders', [])
         for title_name, schedule_data in state.get('schedules', {}).items():
             for iso_time, ign in schedule_data.items():
-                if iso_time in state['sent_reminders']: 
+                if iso_time in state['sent_reminders']:
                     continue
-                
-                shift_time = datetime.fromisoformat(iso_time)
+
+                shift_time = parse_iso_utc(iso_time)
                 reminder_time = shift_time - timedelta(minutes=5)
 
-                # --- change: use webhook for the reminder (tags role + channel) ---
+                # Webhook reminder T-5
                 if reminder_time <= now < shift_time:
                     try:
                         csv_data = {
                             "timestamp": now_utc().isoformat(),
                             "title_name": title_name,
                             "in_game_name": ign if isinstance(ign, str) else str(ign),
-                            "coordinates": "-",  # schedule view might not have coords
+                            "coordinates": "-",
                             "discord_user": "Scheduler"
                         }
                         send_webhook_notification(csv_data, reminder=True)
@@ -266,7 +300,11 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                     except Exception as e:
                         logger.error(f"Could not send shift reminder via webhook: {e}")
 
-        if titles_to_release or any(iso_time not in state.get('sent_reminders', []) for schedule_data in state.get('schedules', {}).values() for iso_time in schedule_data):
+        if titles_to_release or any(
+            iso_time not in state.get('sent_reminders', [])
+            for schedule_data in state.get('schedules', {}).values()
+            for iso_time in schedule_data
+        ):
             await save_state()
 
     async def handle_claim_request(self, guild, title_name, ign, coords, author):
@@ -286,11 +324,16 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             title['pending_claimant'] = claimant_data
             timestamp = now_utc().isoformat()
             discord_user = f"{author.name} ({author.id})" if author else "Web Form"
-            
+
             log_action('claim_request', author.id if author else 0, {'title': title_name, 'ign': ign, 'coords': coords})
-            csv_data = {'timestamp': timestamp, 'title_name': title_name, 'in_game_name': ign, 'coordinates': coords, 'discord_user': discord_user}
+            csv_data = {
+                'timestamp': timestamp,
+                'title_name': title_name,
+                'in_game_name': ign,
+                'coordinates': coords,
+                'discord_user': discord_user
+            }
             log_to_csv(csv_data)
-            # --- immediate webhook on submission (discord path) ---
             send_webhook_notification(csv_data, reminder=False)
 
             guardian_message = (f"👑 **Title Request:** Player **{ign}** ({coords}) has requested **'{title_name}'**. "
@@ -312,7 +355,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         except ValueError:
             await ctx.send("Invalid format. Use `!claim <Title Name> | <In-Game Name> | <X:Y Coords>`")
             return
-        
+
         await self.handle_claim_request(ctx.guild, title_name, ign, coords, ctx.author)
 
     @commands.command(help="List all titles and their status.")
@@ -325,8 +368,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
             if data.get('holder'):
                 holder = data['holder']
                 holder_name = f"{holder['name']} ({holder['coords']})"
-                expiry = parse_iso_utc(data['expiry_date'])
-                remaining = expiry - now_utc()
+                remaining = parse_iso_utc(data['expiry_date']) - now_utc()
                 status += f"**Held by:** {holder_name}\n*Expires in: {str(timedelta(seconds=int(remaining.total_seconds())))}*"
             elif data.get('pending_claimant'):
                 claimant = data['pending_claimant']
@@ -359,8 +401,10 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         now = now_utc()
         expiry_date = now + timedelta(hours=min_hold_hours)
         title.update({
-            'holder': pending_claimant, 'claim_date': now.isoformat(),
-            'expiry_date': expiry_date.isoformat(), 'pending_claimant': None
+            'holder': pending_claimant,
+            'claim_date': now.isoformat(),
+            'expiry_date': expiry_date.isoformat(),
+            'pending_claimant': None
         })
         log_action('assign', ctx.author.id, {'title': title_name, 'ign': ign})
         await save_state()
@@ -382,30 +426,57 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         except ValueError:
             await ctx.send("Invalid format. Use `!schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>`")
             return
+
         if title_name not in state['titles']:
             await ctx.send(f"Title '{title_name}' not found.")
             return
+
         try:
-            schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-            if schedule_time.minute != 0 or schedule_time.hour % 3 != 0:
+            local_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+            start = local_dt.replace(tzinfo=UTC)  # normalize to aware UTC
+            if start.minute != 0 or (start.hour % 3) != 0:
                 raise ValueError
         except ValueError:
             await ctx.send("Invalid time. Use a 3-hour increment (00:00, 03:00, etc.).")
             return
-        if schedule_time < datetime.now():
+
+        if start < now_utc():
             await ctx.send("Cannot schedule a time in the past.")
             return
+
         schedules = state['schedules'].setdefault(title_name, {})
-        schedule_key = schedule_time.isoformat()
+        schedule_key = start.isoformat()
         if schedule_key in schedules:
             await ctx.send(f"This slot is already booked by **{schedules[schedule_key]}**.")
             return
+
+        # prevent same IGN booking multiple titles at same slot
         for title_schedules in state['schedules'].values():
             if schedule_key in title_schedules and title_schedules[schedule_key] == ign:
                 await ctx.send(f"**{ign}** has already booked another title for this slot.")
                 return
+
         schedules[schedule_key] = ign
         log_action('schedule_book', ctx.author.id, {'title': title_name, 'time': schedule_key, 'ign': ign})
+
+        # Auto-assign if slot is current and title is vacant
+        try:
+            if in_current_slot(start) and title_is_vacant_now(title_name):
+                end = start + timedelta(hours=SHIFT_HOURS)
+                state['titles'][title_name].update({
+                    'holder': {'name': ign, 'coords': '-', 'discord_id': None},
+                    'claim_date': start.isoformat(),
+                    'expiry_date': end.isoformat(),
+                    'pending_claimant': None
+                })
+                log_action('auto_assign_now', ctx.author.id, {'title': title_name, 'ign': ign, 'start': start.isoformat()})
+                await self.announce(
+                    f"⚡ Auto-assigned **{title_name}** to **{ign}** for the current slot "
+                    f"({start.strftime('%H:%M')}–{(start + timedelta(hours=SHIFT_HOURS)).strftime('%H:%M')} UTC)."
+                )
+        except Exception as e:
+            logger.error(f"Auto-assign-now failed: {e}")
+
         await save_state()
         await ctx.send(f"Booked '{title_name}' for **{ign}** on {date_str} at {time_str} UTC.")
         await self.announce(f"🗓️ SCHEDULE UPDATE: A 3-hour slot for **'{title_name}'** was booked by **{ign}** for {date_str} at {time_str} UTC.")
@@ -422,12 +493,14 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         if not queue:
             await self.announce(f"👑 The title **'{title_name}'** is now available!")
             return
-        
+
         next_in_line = queue.pop(0)
         state['titles'][title_name]['pending_claimant'] = next_in_line
         user_mention = f"<@{next_in_line['discord_id']}>"
-        guardian_message = (f"👑 **Next in Queue:** {user_mention}, it's **{next_in_line['name']}'s** turn for **'{title_name}'**! "
-                            f"A guardian must use `!assign {title_name} | {next_in_line['name']}` to grant it.")
+        guardian_message = (
+            f"👑 **Next in Queue:** {user_mention}, it's **{next_in_line['name']}'s** turn for **'{title_name}'**! "
+            f"A guardian must use `!assign {title_name} | {next_in_line['name']}` to grant it."
+        )
         await self.notify_guardians(ctx.guild, title_name, guardian_message)
 
     async def force_release_logic(self, title_name, actor_id, reason):
@@ -436,9 +509,12 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         holder_info = state['titles'][title_name]['holder']
         log_action('force_release', actor_id, {'title': title_name, 'ign': holder_info['name'], 'reason': reason})
         state['titles'][title_name].update({'holder': None, 'claim_date': None, 'expiry_date': None})
+
         class FakeContext:
             def __init__(self, guild): self.guild = guild
-        await self.process_queue(FakeContext(self.bot.guilds[0]), title_name)
+
+        if self.bot.guilds:
+            await self.process_queue(FakeContext(self.bot.guilds[0]), title_name)
         await save_state()
         await self.announce(f"👑 The title **'{title_name}'** held by **{holder_info['name']}** has automatically expired.")
 
@@ -447,31 +523,41 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         if channel_id:
             try:
                 channel = await self.bot.fetch_channel(channel_id)
-                if channel: await channel.send(message)
+                if channel:
+                    await channel.send(message)
             except (discord.NotFound, discord.Forbidden) as e:
                 logger.error(f"Could not send to announcement channel {channel_id}: {e}")
 
     async def notify_guardians(self, guild, title_name, message):
         await self.announce(message)
 
-    @app_commands.command(name="claim", description="Claim a title")
-    @app_commands.describe(
-        title="Architect, Governor, Prefect, or General",
-        ign="Your in-game name",
-        coords="Your coordinates X:Y"
+# ---- Slash Command (global, calls into the cog) ----
+@bot.tree.command(name="claim", description="Claim a title")
+@app_commands.describe(
+    title="Architect, Governor, Prefect, or General",
+    ign="Your in-game name",
+    coords="Your coordinates X:Y"
+)
+@app_commands.choices(
+    title=[
+        app_commands.Choice(name="Architect", value="Architect"),
+        app_commands.Choice(name="Governor", value="Governor"),
+        app_commands.Choice(name="Prefect", value="Prefect"),
+        app_commands.Choice(name="General", value="General"),
+    ]
+)
+async def slash_claim(interaction: discord.Interaction, title: app_commands.Choice[str], ign: str, coords: str):
+    cog = bot.get_cog("TitleRequest")
+    if not cog:
+        await interaction.response.send_message("Bot not ready.", ephemeral=True)
+        return
+    await cog.handle_claim_request(interaction.guild, title.value, ign, coords, interaction.user)
+    await interaction.response.send_message(
+        f"✅ Logged request for **{title.value}** by **{ign}** at {coords}.",
+        ephemeral=True
     )
-    @app_commands.choices(
-        title=[
-            app_commands.Choice(name="Architect", value="Architect"),
-            app_commands.Choice(name="Governor", value="Governor"),
-            app_commands.Choice(name="Prefect", value="Prefect"),
-            app_commands.Choice(name="General", value="General"),
-        ]
-    )
-    async def slash_claim(self, interaction: discord.Interaction, title: app_commands.Choice[str], ign: str, coords: str):
-        await self.handle_claim_request(interaction.guild, title.value, ign, coords, interaction.user)
-        await interaction.response.send_message(f"✅ Logged request for **{title.value}** by **{ign}** at {coords}.", ephemeral=True)
 
+# Ensure icons exist before Flask renders any templates
 ensure_icons_cached()
 
 # --- Flask Web Server ---
@@ -524,7 +610,6 @@ def dashboard():
         requestable_titles=requestable_titles
     )
 
-
 @app.route("/log")
 def view_log():
     log_data = []
@@ -542,22 +627,49 @@ def book_slot():
     coords = request.form.get('coords')
     date_str = request.form.get('date')
     time_str = request.form.get('time')
-    
+
     if not all([title_name, ign, coords, date_str, time_str]):
         return "Missing form data.", 400
     if title_name not in REQUESTABLE:
         return "This title cannot be requested.", 400
 
-    schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-    
+    # Normalize to aware UTC start
+    local_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+    schedule_time = local_dt.replace(tzinfo=UTC)
+    schedule_key = schedule_time.isoformat()
+
     async def do_booking():
         async with state_lock:
             schedules = state['schedules'].setdefault(title_name, {})
-            schedule_key = schedule_time.isoformat()
             if schedule_key not in schedules:
                 schedules[schedule_key] = ign  # keep IGN only; coords optional in schedule grid
                 log_action('schedule_book_web', 0, {'title': title_name, 'time': schedule_key, 'ign': ign})
-                # --- also log as a "request" to CSV like Discord path ---
+
+                # Auto-assign if now and vacant
+                try:
+                    if in_current_slot(schedule_time) and title_is_vacant_now(title_name):
+                        end = schedule_time + timedelta(hours=SHIFT_HOURS)
+                        state['titles'][title_name].update({
+                            'holder': {'name': ign, 'coords': coords or '-', 'discord_id': 0},
+                            'claim_date': schedule_time.isoformat(),
+                            'expiry_date': end.isoformat(),
+                            'pending_claimant': None
+                        })
+                        log_action('auto_assign_now', 0, {'title': title_name, 'ign': ign, 'start': schedule_time.isoformat()})
+                        try:
+                            send_webhook_notification({
+                                "timestamp": now_utc().isoformat(),
+                                "title_name": title_name,
+                                "in_game_name": ign,
+                                "coordinates": coords or "-",
+                                "discord_user": "Web Form (Auto-Assign)"
+                            }, reminder=False)
+                        except Exception as e:
+                            logger.error(f"Webhook on auto-assign failed: {e}")
+                except Exception as e:
+                    logger.error(f"Auto-assign-now (web) failed: {e}")
+
+                # Log to CSV and immediate webhook on submission
                 csv_data = {
                     "timestamp": now_utc().isoformat(),
                     "title_name": title_name,
@@ -566,8 +678,8 @@ def book_slot():
                     "discord_user": "Web Form"
                 }
                 log_to_csv(csv_data)
-                # --- immediate webhook on submission (web path) ---
                 send_webhook_notification(csv_data, reminder=False)
+
                 await save_state()
 
     bot.loop.call_soon_threadsafe(asyncio.create_task, do_booking())
@@ -576,8 +688,10 @@ def book_slot():
 def run_flask_app():
     serve(app, host='0.0.0.0', port=8080)
 
+# --- Template files (kept) ---
 if not os.path.exists('templates'):
     os.makedirs('templates')
+
 with open('templates/dashboard.html', 'w') as f:
     f.write("""
 <!DOCTYPE html>
@@ -596,7 +710,7 @@ with open('templates/dashboard.html', 'w') as f:
         h3 { display: flex; align-items: center; margin-top: 0; }
         h3 img { margin-right: 10px; }
         table { width: 100%; border-collapse: collapse; margin-top: 1em; }
-        th, td { border: 1px solid #40444b; padding: 8px; text-align: center; }
+        th, td { border: 1px solid #40444b; padding: 8px; text-align: center; vertical-align: top; }
         input, select, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #555; background-color: #40444b; color: #dcddde; }
         button { background-color: #7289da; cursor: pointer; font-weight: bold; }
         a { color: #7289da; }
@@ -605,9 +719,10 @@ with open('templates/dashboard.html', 'w') as f:
 <body>
     <div class="container">
         <h1>
-    <img src="{{ url_for('static', filename='icons/title-requestor.png') }}" width="32" height="32" style="vertical-align: middle; margin-right: 8px;">
-    Title Requestor
-</h1>
+            <img src="{{ url_for('static', filename='icons/title-requestor.png') }}" width="32" height="32" style="vertical-align: middle; margin-right: 8px;">
+            Title Requestor
+        </h1>
+
         <div class="title-grid">
             {% for title in titles %}
             <div class="title-card">
@@ -623,14 +738,18 @@ with open('templates/dashboard.html', 'w') as f:
             <h2>Claim a Temple Title</h2>
             <form action="/book-slot" method="POST">
                 <select name="title" required>
-                    {% for title_name in requestable_titles %}
-                    <option value="{{ title_name }}">{{ title_name }}</option>
+                    {% for t in requestable_titles %}
+                        <option value="{{ t }}">{{ t }}</option>
                     {% endfor %}
                 </select>
                 <input type="text" name="ign" placeholder="In-Game Name" required>
                 <input type="text" name="coords" placeholder="X:Y Coordinates" required>
                 <input type="date" name="date" value="{{ today }}" required>
-                <select name="time" required>{% for hour in hours %}<option value="{{ hour }}">{{ hour }}</option>{% endfor %}</select>
+                <select name="time" required>
+                    {% for hour in hours %}
+                        <option value="{{ hour }}">{{ hour }}</option>
+                    {% endfor %}
+                </select>
                 <button type="submit">Submit</button>
             </form>
         </div>
@@ -638,7 +757,14 @@ with open('templates/dashboard.html', 'w') as f:
         <div class="schedule-card">
             <h2>Upcoming Week Schedule</h2>
             <table>
-                <thead><tr><th>Time (UTC)</th>{% for day in days %}<th>{{ day.strftime('%A') }}<br>{{ day.strftime('%Y-%m-%d') }}</th>{% endfor %}</tr></thead>
+                <thead>
+                    <tr>
+                        <th>Time (UTC)</th>
+                        {% for day in days %}
+                            <th>{{ day.strftime('%A') }}<br>{{ day.strftime('%Y-%m-%d') }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
                 <tbody>
                     {% for hour in hours %}
                     <tr>
@@ -646,9 +772,9 @@ with open('templates/dashboard.html', 'w') as f:
                         {% for day in days %}
                         <td>
                             {% for title_name, schedule_data in schedules.items() %}
-                                {# schedule keys are ISO like 2025-08-30T15:00:00 (we saved .isoformat()) #}
-                                {% set slot_time = day.strftime('%Y-%m-%d') ~ 'T' ~ hour ~ ':00:00' %}
-                                {% set who = schedule_data.get(slot_time) %}
+                                {# keys like 2025-08-30T09:00:00+00:00 or without tz #}
+                                {% set slot_time = day.strftime('%Y-%m-%d') ~ 'T' ~ hour ~ ':00' %}
+                                {% set who = schedule_data.get(slot_time) or schedule_data.get(slot_time ~ ':00') or None %}
                                 {% if who %}
                                     <div><strong>{{ title_name }}</strong><br>{{ who }}</div>
                                 {% endif %}
@@ -660,11 +786,13 @@ with open('templates/dashboard.html', 'w') as f:
                 </tbody>
             </table>
         </div>
+
         <p style="text-align: center; margin-top: 2em;"><a href="/log">View Full Request Log</a></p>
     </div>
 </body>
 </html>
 """)
+
 with open('templates/log.html', 'w') as f:
     f.write("""
 <!DOCTYPE html>
