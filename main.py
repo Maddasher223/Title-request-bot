@@ -1,20 +1,23 @@
-# main.py - Complete Code (fixed)
+# main.py - COMPLETE & FIXED
+
+import os
+import csv
+import json
+import logging
+import asyncio
+import requests
+from threading import Thread
+from datetime import datetime, timedelta, timezone
+from flask import Flask, render_template, request, redirect, url_for
+from waitress import serve
 
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import json
-import os
-import logging
-import asyncio
-from threading import Thread
-from flask import Flask, render_template, request, redirect, url_for
-import csv
-from waitress import serve
-import requests
-from datetime import datetime, timedelta, UTC  # timezone-aware utilities
 
-# ---------- Time helpers ----------
+# ========= UTC helpers =========
+UTC = timezone.utc
+
 def now_utc() -> datetime:
     return datetime.now(UTC)
 
@@ -26,19 +29,16 @@ def parse_iso_utc(s: str) -> datetime:
     return dt
 
 SHIFT_HOURS = 3
-def slot_key(dt: datetime) -> str:
-    """Normalize to hour, return ISO string with tzinfo if missing."""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.replace(minute=0, second=0, microsecond=0).isoformat()
 
 def in_current_slot(slot_start: datetime) -> bool:
-    now = now_utc()
+    """Is now within [slot_start, slot_start+3h)?"""
+    if slot_start.tzinfo is None:
+        slot_start = slot_start.replace(tzinfo=UTC)
     end = slot_start + timedelta(hours=SHIFT_HOURS)
-    return slot_start <= now < end
+    return slot_start <= now_utc() < end
 
 def title_is_vacant_now(title_name: str) -> bool:
-    t = state['titles'].get(title_name, {})
+    t = state.get('titles', {}).get(title_name, {})
     holder = t.get('holder')
     if not holder:
         return True
@@ -51,7 +51,7 @@ def title_is_vacant_now(title_name: str) -> bool:
             pass
     return False
 
-# --- Static Title Configuration ---
+# ========= Static Titles =========
 TITLES_CATALOG = {
     "Guardian of Harmony": {"effects": "All benders' ATK +5%, All benders' DEF +5%, All Benders' recruiting speed +15%", "image": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793727018569758/guardian_harmony.png"},
     "Guardian of Air": {"effects": "All Resource Gathering Speed +20%, All Resource Production +20%", "image": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793463817605181/guardian_air.png"},
@@ -68,18 +68,18 @@ ORDERED_TITLES = [
     "Guardian of Harmony", "Guardian of Air", "Guardian of Water", "Guardian of Earth", "Guardian of Fire",
     "Architect", "General", "Governor", "Prefect"
 ]
+
 WEBHOOK_URL = "https://discord.com/api/webhooks/1409980293762253001/s5ffx0R9Tl9fhcvQXAWaqA_LG5b7SsUmpzeBHZOdGGznnLg_KRNwtk6sGvOOhh0oSw10"
 GUARDIAN_ROLE_ID = 1409964411057344512
 TITLE_REQUESTS_CHANNEL_ID = 1409770504696631347
 
-# --- Initial Setup ---
+# ========= Discord setup =========
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- State and Logging Configuration ---
-# Persist state/logs under ./data so restarts keep everything
+# ========= Persistence (keep across restarts) =========
 BASE_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -88,33 +88,19 @@ STATE_FILE = os.path.join(DATA_DIR, "titles_state.json")
 LOG_FILE   = os.path.join(DATA_DIR, "log.json")
 CSV_FILE   = os.path.join(DATA_DIR, "requests.csv")
 
-state = {}
+state: dict = {}
 state_lock = asyncio.Lock()
 
-# Configure logging
+# ========= Logging =========
 logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Helper Functions ---
-async def initialize_titles():
-    """Ensures all titles from the catalog exist in the state file."""
-    async with state_lock:
-        state.setdefault('titles', {})
-        for title_name, details in TITLES_CATALOG.items():
-            if title_name not in state['titles']:
-                state['titles'][title_name] = {
-                    'holder': None,
-                    'queue': [],
-                    'claim_date': None,
-                    'expiry_date': None,
-                    'pending_claimant': None
-                }
-            state['titles'][title_name]['icon'] = details['image']
-            state['titles'][title_name]['buffs'] = details['effects']
-    await save_state()
+# ========= Helper: state & logs =========
+def initialize_state():
+    global state
+    state = {'titles': {}, 'users': {}, 'config': {}, 'schedules': {}, 'sent_reminders': []}
 
 async def load_state():
-    """Loads the bot's state from a JSON file."""
     global state
     async with state_lock:
         if os.path.exists(STATE_FILE):
@@ -127,13 +113,7 @@ async def load_state():
         else:
             initialize_state()
 
-def initialize_state():
-    """Initializes a default state structure."""
-    global state
-    state = {'titles': {}, 'users': {}, 'config': {}, 'schedules': {}, 'sent_reminders': []}
-
 async def save_state():
-    """Saves the bot's state to a JSON file."""
     async with state_lock:
         try:
             with open(STATE_FILE, 'w') as f:
@@ -142,20 +122,20 @@ async def save_state():
             logger.error(f"Error saving state file: {e}")
 
 def log_action(action, user_id, details):
-    log_entry = {'timestamp': now_utc().isoformat(), 'action': action, 'user_id': user_id, 'details': details}
+    entry = {'timestamp': now_utc().isoformat(), 'action': action, 'user_id': user_id, 'details': details}
     try:
-        logs = []
+        existing = []
         if os.path.exists(LOG_FILE):
             with open(LOG_FILE, 'r') as f:
                 try:
-                    logs = json.load(f)
+                    existing = json.load(f)
                 except json.JSONDecodeError:
-                    pass
-        logs.append(log_entry)
+                    existing = []
+        existing.append(entry)
         with open(LOG_FILE, 'w') as f:
-            json.dump(logs, f, indent=4)
+            json.dump(existing, f, indent=4)
     except IOError as e:
-        logger.error(f"Error writing to log file: {e}")
+        logger.error(f"Error writing log: {e}")
 
 def log_to_csv(request_data):
     file_exists = os.path.isfile(CSV_FILE)
@@ -167,9 +147,53 @@ def log_to_csv(request_data):
                 writer.writeheader()
             writer.writerow(request_data)
     except IOError as e:
-        logger.error(f"Error writing to CSV file: {e}")
+        logger.error(f"Error writing CSV: {e}")
 
-# Map each title to a local filename in static/icons/
+async def initialize_titles():
+    """Ensure all titles exist in state with default fields."""
+    async with state_lock:
+        state.setdefault('titles', {})
+        for title_name, details in TITLES_CATALOG.items():
+            if title_name not in state['titles']:
+                state['titles'][title_name] = {
+                    'holder': None, 'queue': [], 'claim_date': None, 'expiry_date': None, 'pending_claimant': None
+                }
+            state['titles'][title_name]['icon'] = details['image']
+            state['titles'][title_name]['buffs'] = details['effects']
+    await save_state()
+
+# ========= Rebuild schedules from log on restart =========
+async def rebuild_schedules_from_log():
+    try:
+        if not os.path.exists(LOG_FILE):
+            return
+        with open(LOG_FILE, 'r') as f:
+            try:
+                entries = json.load(f)
+            except json.JSONDecodeError:
+                entries = []
+
+        state.setdefault('schedules', {})
+        for entry in entries:
+            action = entry.get('action')
+            if action not in ('schedule_book', 'schedule_book_web'):
+                continue
+            d = entry.get('details', {})
+            title_name = d.get('title')
+            iso_time   = d.get('time')
+            ign        = d.get('ign')
+            if not title_name or not iso_time or not ign:
+                continue
+            if title_name not in TITLES_CATALOG:
+                continue
+            schedules_for_title = state['schedules'].setdefault(title_name, {})
+            schedules_for_title.setdefault(iso_time, ign)
+
+        await save_state()
+    except Exception as e:
+        logger.error(f"rebuild_schedules_from_log failed: {e}")
+
+# ========= Icons (cache locally) =========
 ICON_FILES = {
     "Guardian of Harmony": "guardian_harmony.png",
     "Guardian of Air": "guardian_air.png",
@@ -181,8 +205,6 @@ ICON_FILES = {
     "Governor": "governor.png",
     "Prefect": "prefect.png",
 }
-
-# Original sources (without expiring query params)
 ICON_SOURCES = {
     "Guardian of Harmony": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793727018569758/guardian_harmony.png",
     "Guardian of Air": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793463817605181/guardian_air.png",
@@ -194,9 +216,7 @@ ICON_SOURCES = {
     "Governor": "https://cdn.discordapp.com/attachments/1409793076955840583/1409796936227356723/governor.png",
     "Prefect": "https://cdn.discordapp.com/attachments/1409793076955840583/1409797574763741205/prefect.png",
 }
-
 def ensure_icons_cached():
-    """Download icons to static/icons/ if missing; keep local copies stable."""
     static_dir = os.path.join(os.path.dirname(__file__), "static", "icons")
     os.makedirs(static_dir, exist_ok=True)
     for title, fname in ICON_FILES.items():
@@ -209,15 +229,10 @@ def ensure_icons_cached():
                 with open(path, "wb") as f:
                     f.write(r.content)
             except Exception as e:
-                logging.getLogger(__name__).error(f"Icon download failed for {title}: {e}")
+                logger.error(f"Icon download failed for {title}: {e}")
 
-# === Discord webhook helper (role + channel tagging + allowed_mentions) ===
+# ========= Webhook helper =========
 def send_webhook_notification(data, reminder=False):
-    """
-    Send a Discord webhook message.
-    Expects `data` with keys: title_name, in_game_name, coordinates, discord_user, timestamp (ISO).
-    If reminder=True, sends the T-5 min pre-start notice.
-    """
     role_tag = f"<@&{GUARDIAN_ROLE_ID}>"
     channel_tag = f"<#{TITLE_REQUESTS_CHANNEL_ID}>"
 
@@ -247,7 +262,7 @@ def send_webhook_notification(data, reminder=False):
         r = requests.post(WEBHOOK_URL, json=payload, timeout=8)
         r.raise_for_status()
     except Exception as e:
-        logging.getLogger(__name__).error(f"Webhook send failed: {e}")
+        logger.error(f"Webhook send failed: {e}")
 
 def is_guardian_or_admin(ctx):
     if ctx.author.guild_permissions.administrator:
@@ -256,79 +271,54 @@ def is_guardian_or_admin(ctx):
     user_role_ids = {role.id for role in ctx.author.roles}
     return any(role_id in user_role_ids for role_id in guardian_role_ids)
 
-# --- Main Bot Cog ---
+# ========= Discord Cog =========
 class TitleCog(commands.Cog, name="TitleRequest"):
     def __init__(self, bot):
         self.bot = bot
         self.title_check_loop.start()
 
     @tasks.loop(minutes=1)
-async def title_check_loop(self):
-    await self.bot.wait_until_ready()
-    now = now_utc()
+    async def title_check_loop(self):
+        await self.bot.wait_until_ready()
+        now = now_utc()
 
-    # 1) Auto-release expired live holders
-    titles_to_release = []
-    for title_name, data in state.get('titles', {}).items():
-        if data.get('holder') and data.get('expiry_date'):
-            if now >= parse_iso_utc(data['expiry_date']):
-                titles_to_release.append(title_name)
+        # auto-expire
+        titles_to_release = []
+        for title_name, data in state.get('titles', {}).items():
+            if data.get('holder') and data.get('expiry_date'):
+                if now >= parse_iso_utc(data['expiry_date']):
+                    titles_to_release.append(title_name)
+        for title_name in titles_to_release:
+            await self.force_release_logic(title_name, self.bot.user.id, "Title expired.")
 
-    for title_name in titles_to_release:
-        await self.force_release_logic(title_name, self.bot.user.id, "Title expired.")
+        # T-5 reminders
+        state.setdefault('sent_reminders', [])
+        for title_name, schedule_data in state.get('schedules', {}).items():
+            for iso_time, ign in schedule_data.items():
+                if iso_time in state['sent_reminders']:
+                    continue
+                shift_time = parse_iso_utc(iso_time)
+                reminder_time = shift_time - timedelta(minutes=5)
+                if reminder_time <= now < shift_time:
+                    try:
+                        csv_data = {
+                            "timestamp": now_utc().isoformat(),
+                            "title_name": title_name,
+                            "in_game_name": ign if isinstance(ign, str) else str(ign),
+                            "coordinates": "-",
+                            "discord_user": "Scheduler"
+                        }
+                        send_webhook_notification(csv_data, reminder=True)
+                        state['sent_reminders'].append(iso_time)
+                    except Exception as e:
+                        logger.error(f"Could not send shift reminder: {e}")
 
-    # 2) T-5 reminder + 3) Auto-activate slot at start if still vacant
-    state.setdefault('sent_reminders', [])
-    state.setdefault('activated_slots', [])   # remember which schedule slots we've activated
-
-    for title_name, schedule_data in state.get('schedules', {}).items():
-        for iso_time, ign in schedule_data.items():
-            shift_start = parse_iso_utc(iso_time)
-            shift_end = shift_start + timedelta(hours=SHIFT_HOURS)
-
-            # 2) Send the T-5 reminder (once)
-            reminder_time = shift_start - timedelta(minutes=5)
-            if (iso_time not in state['sent_reminders']) and (reminder_time <= now < shift_start):
-                try:
-                    csv_data = {
-                        "timestamp": now_utc().isoformat(),
-                        "title_name": title_name,
-                        "in_game_name": ign if isinstance(ign, str) else str(ign),
-                        "coordinates": "-",
-                        "discord_user": "Scheduler"
-                    }
-                    send_webhook_notification(csv_data, reminder=True)
-                    state['sent_reminders'].append(iso_time)
-                except Exception as e:
-                    logger.error(f"Could not send shift reminder via webhook: {e}")
-
-            # 3) Auto-assign at slot start if the title is vacant (once per slot)
-            #    This is the "bucket becomes holder" step.
-            if (iso_time not in state['activated_slots']) and (shift_start <= now < shift_end):
-                try:
-                    if title_is_vacant_now(title_name):
-                        state['titles'][title_name].update({
-                            'holder': {'name': ign, 'coords': '-', 'discord_id': None},
-                            'claim_date': shift_start.isoformat(),
-                            'expiry_date': shift_end.isoformat(),
-                            'pending_claimant': None
-                        })
-                        log_action('auto_assign_on_start', 0, {
-                            'title': title_name, 'ign': ign,
-                            'start': shift_start.isoformat(), 'end': shift_end.isoformat()
-                        })
-                        state['activated_slots'].append(iso_time)
-
-                        # Optional broadcast so everyone sees it flipped live
-                        await self.announce(
-                            f"✅ Shift started: **{title_name}** auto-assigned to **{ign}** "
-                            f"({shift_start.strftime('%H:%M')}–{shift_end.strftime('%H:%M')} UTC)."
-                        )
-                except Exception as e:
-                    logger.error(f"Auto-assign at slot start failed: {e}")
-
-    # 4) Persist any changes
-    await save_state()
+        if titles_to_release or any(
+            iso_time not in state.get('sent_reminders', [])
+            for schedule_data in state.get('schedules', {}).values()
+            for iso_time in schedule_data
+        ):
+            await save_state()
 
     async def handle_claim_request(self, guild, title_name, ign, coords, author):
         if title_name not in REQUESTABLE:
@@ -349,13 +339,7 @@ async def title_check_loop(self):
             discord_user = f"{author.name} ({author.id})" if author else "Web Form"
 
             log_action('claim_request', author.id if author else 0, {'title': title_name, 'ign': ign, 'coords': coords})
-            csv_data = {
-                'timestamp': timestamp,
-                'title_name': title_name,
-                'in_game_name': ign,
-                'coordinates': coords,
-                'discord_user': discord_user
-            }
+            csv_data = {'timestamp': timestamp, 'title_name': title_name, 'in_game_name': ign, 'coordinates': coords, 'discord_user': discord_user}
             log_to_csv(csv_data)
             send_webhook_notification(csv_data, reminder=False)
 
@@ -378,7 +362,6 @@ async def title_check_loop(self):
         except ValueError:
             await ctx.send("Invalid format. Use `!claim <Title Name> | <In-Game Name> | <X:Y Coords>`")
             return
-
         await self.handle_claim_request(ctx.guild, title_name, ign, coords, ctx.author)
 
     @commands.command(help="List all titles and their status.")
@@ -391,7 +374,8 @@ async def title_check_loop(self):
             if data.get('holder'):
                 holder = data['holder']
                 holder_name = f"{holder['name']} ({holder['coords']})"
-                remaining = parse_iso_utc(data['expiry_date']) - now_utc()
+                expiry = parse_iso_utc(data['expiry_date'])
+                remaining = expiry - now_utc()
                 status += f"**Held by:** {holder_name}\n*Expires in: {str(timedelta(seconds=int(remaining.total_seconds())))}*"
             elif data.get('pending_claimant'):
                 claimant = data['pending_claimant']
@@ -444,58 +428,58 @@ async def title_check_loop(self):
 
     @commands.command(help="Book a 3-hour time slot. Usage: !schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>")
     async def schedule(self, ctx, *, full_argument: str):
+        # parse inputs
         try:
             title_name, ign, date_str, time_str = [p.strip() for p in full_argument.split('|')]
         except ValueError:
             await ctx.send("Invalid format. Use `!schedule <Title Name> | <In-Game Name> | <YYYY-MM-DD> | <HH:00>`")
             return
-
         if title_name not in state['titles']:
             await ctx.send(f"Title '{title_name}' not found.")
             return
-
         try:
-            local_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-            start = local_dt.replace(tzinfo=UTC)  # normalize to aware UTC
-            if start.minute != 0 or (start.hour % 3) != 0:
+            schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+            schedule_time = schedule_time.replace(tzinfo=UTC)
+            if schedule_time.minute != 0 or schedule_time.hour % 3 != 0:
                 raise ValueError
         except ValueError:
             await ctx.send("Invalid time. Use a 3-hour increment (00:00, 03:00, etc.).")
             return
-
-        if start < now_utc():
+        if schedule_time < now_utc():
             await ctx.send("Cannot schedule a time in the past.")
             return
 
+        # enforce: a person can’t hold multiple titles at the same exact slot
+        schedule_key = schedule_time.replace(second=0, microsecond=0).isoformat()
+        for t_name, t_sched in state.get('schedules', {}).items():
+            if schedule_key in t_sched and t_sched[schedule_key] == ign:
+                await ctx.send(f"**{ign}** has already booked **{t_name}** for this slot.")
+                return
+
+        # enforce: only one booking per title per slot
         schedules = state['schedules'].setdefault(title_name, {})
-        schedule_key = start.isoformat()
         if schedule_key in schedules:
             await ctx.send(f"This slot is already booked by **{schedules[schedule_key]}**.")
             return
 
-        # prevent same IGN booking multiple titles at same slot
-        for title_schedules in state['schedules'].values():
-            if schedule_key in title_schedules and title_schedules[schedule_key] == ign:
-                await ctx.send(f"**{ign}** has already booked another title for this slot.")
-                return
-
+        # book it
         schedules[schedule_key] = ign
         log_action('schedule_book', ctx.author.id, {'title': title_name, 'time': schedule_key, 'ign': ign})
 
-        # Auto-assign if slot is current and title is vacant
+        # auto-assign now if in current slot and title vacant
         try:
-            if in_current_slot(start) and title_is_vacant_now(title_name):
-                end = start + timedelta(hours=SHIFT_HOURS)
+            if in_current_slot(schedule_time) and title_is_vacant_now(title_name):
+                end = schedule_time + timedelta(hours=SHIFT_HOURS)
                 state['titles'][title_name].update({
                     'holder': {'name': ign, 'coords': '-', 'discord_id': None},
-                    'claim_date': start.isoformat(),
+                    'claim_date': schedule_time.isoformat(),
                     'expiry_date': end.isoformat(),
                     'pending_claimant': None
                 })
-                log_action('auto_assign_now', ctx.author.id, {'title': title_name, 'ign': ign, 'start': start.isoformat()})
+                log_action('auto_assign_now', ctx.author.id, {'title': title_name, 'ign': ign, 'start': schedule_time.isoformat()})
                 await self.announce(
                     f"⚡ Auto-assigned **{title_name}** to **{ign}** for the current slot "
-                    f"({start.strftime('%H:%M')}–{(start + timedelta(hours=SHIFT_HOURS)).strftime('%H:%M')} UTC)."
+                    f"({schedule_time.strftime('%H:%M')}–{end.strftime('%H:%M')} UTC)."
                 )
         except Exception as e:
             logger.error(f"Auto-assign-now failed: {e}")
@@ -516,7 +500,6 @@ async def title_check_loop(self):
         if not queue:
             await self.announce(f"👑 The title **'{title_name}'** is now available!")
             return
-
         next_in_line = queue.pop(0)
         state['titles'][title_name]['pending_claimant'] = next_in_line
         user_mention = f"<@{next_in_line['discord_id']}>"
@@ -532,12 +515,9 @@ async def title_check_loop(self):
         holder_info = state['titles'][title_name]['holder']
         log_action('force_release', actor_id, {'title': title_name, 'ign': holder_info['name'], 'reason': reason})
         state['titles'][title_name].update({'holder': None, 'claim_date': None, 'expiry_date': None})
-
         class FakeContext:
             def __init__(self, guild): self.guild = guild
-
-        if self.bot.guilds:
-            await self.process_queue(FakeContext(self.bot.guilds[0]), title_name)
+        await self.process_queue(FakeContext(self.bot.guilds[0]), title_name)
         await save_state()
         await self.announce(f"👑 The title **'{title_name}'** held by **{holder_info['name']}** has automatically expired.")
 
@@ -554,36 +534,8 @@ async def title_check_loop(self):
     async def notify_guardians(self, guild, title_name, message):
         await self.announce(message)
 
-# ---- Slash Command (global, calls into the cog) ----
-@bot.tree.command(name="claim", description="Claim a title")
-@app_commands.describe(
-    title="Architect, Governor, Prefect, or General",
-    ign="Your in-game name",
-    coords="Your coordinates X:Y"
-)
-@app_commands.choices(
-    title=[
-        app_commands.Choice(name="Architect", value="Architect"),
-        app_commands.Choice(name="Governor", value="Governor"),
-        app_commands.Choice(name="Prefect", value="Prefect"),
-        app_commands.Choice(name="General", value="General"),
-    ]
-)
-async def slash_claim(interaction: discord.Interaction, title: app_commands.Choice[str], ign: str, coords: str):
-    cog = bot.get_cog("TitleRequest")
-    if not cog:
-        await interaction.response.send_message("Bot not ready.", ephemeral=True)
-        return
-    await cog.handle_claim_request(interaction.guild, title.value, ign, coords, interaction.user)
-    await interaction.response.send_message(
-        f"✅ Logged request for **{title.value}** by **{ign}** at {coords}.",
-        ephemeral=True
-    )
-
-# Ensure icons exist before Flask renders any templates
+# ========= Flask App =========
 ensure_icons_cached()
-
-# --- Flask Web Server ---
 app = Flask(__name__)
 
 def get_bot_state():
@@ -607,7 +559,6 @@ def dashboard():
             delta = expiry - now_utc()
             remaining = str(timedelta(seconds=int(delta.total_seconds()))) if delta.total_seconds() > 0 else "Expired"
 
-        # Use local cached icon
         local_icon = url_for('static', filename=f"icons/{ICON_FILES[title_name]}")
         titles_data.append({
             'name': title_name,
@@ -656,19 +607,23 @@ def book_slot():
     if title_name not in REQUESTABLE:
         return "This title cannot be requested.", 400
 
-    # Normalize to aware UTC start
-    local_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-    schedule_time = local_dt.replace(tzinfo=UTC)
-    schedule_key = schedule_time.isoformat()
+    schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
 
     async def do_booking():
         async with state_lock:
+            # enforce: a person can’t hold multiple titles at the same exact slot
+            schedule_key = schedule_time.replace(second=0, microsecond=0).isoformat()
+            for t_name, t_sched in state.get('schedules', {}).items():
+                if schedule_key in t_sched and t_sched[schedule_key] == ign:
+                    # silently ignore double-book attempts via web; you could also flash a message
+                    return
+
             schedules = state['schedules'].setdefault(title_name, {})
             if schedule_key not in schedules:
-                schedules[schedule_key] = ign  # keep IGN only; coords optional in schedule grid
+                schedules[schedule_key] = ign
                 log_action('schedule_book_web', 0, {'title': title_name, 'time': schedule_key, 'ign': ign})
 
-                # Auto-assign if now and vacant
+                # auto assign now if current slot and vacant
                 try:
                     if in_current_slot(schedule_time) and title_is_vacant_now(title_name):
                         end = schedule_time + timedelta(hours=SHIFT_HOURS)
@@ -692,7 +647,7 @@ def book_slot():
                 except Exception as e:
                     logger.error(f"Auto-assign-now (web) failed: {e}")
 
-                # Log to CSV and immediate webhook on submission
+                # also write a CSV "request"
                 csv_data = {
                     "timestamp": now_utc().isoformat(),
                     "title_name": title_name,
@@ -711,13 +666,13 @@ def book_slot():
 def run_flask_app():
     serve(app, host='0.0.0.0', port=8080)
 
-# --- Template files (kept) ---
+# ========= Templates written if missing (kept same look) =========
 if not os.path.exists('templates'):
     os.makedirs('templates')
 
+# Dashboard
 with open('templates/dashboard.html', 'w') as f:
-    f.write("""
-<!DOCTYPE html>
+    f.write("""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -733,7 +688,7 @@ with open('templates/dashboard.html', 'w') as f:
         h3 { display: flex; align-items: center; margin-top: 0; }
         h3 img { margin-right: 10px; }
         table { width: 100%; border-collapse: collapse; margin-top: 1em; }
-        th, td { border: 1px solid #40444b; padding: 8px; text-align: center; vertical-align: top; }
+        th, td { border: 1px solid #40444b; padding: 8px; text-align: center; }
         input, select, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #555; background-color: #40444b; color: #dcddde; }
         button { background-color: #7289da; cursor: pointer; font-weight: bold; }
         a { color: #7289da; }
@@ -762,7 +717,7 @@ with open('templates/dashboard.html', 'w') as f:
             <form action="/book-slot" method="POST">
                 <select name="title" required>
                     {% for t in requestable_titles %}
-                        <option value="{{ t }}">{{ t }}</option>
+                    <option value="{{ t }}">{{ t }}</option>
                     {% endfor %}
                 </select>
                 <input type="text" name="ign" placeholder="In-Game Name" required>
@@ -770,7 +725,7 @@ with open('templates/dashboard.html', 'w') as f:
                 <input type="date" name="date" value="{{ today }}" required>
                 <select name="time" required>
                     {% for hour in hours %}
-                        <option value="{{ hour }}">{{ hour }}</option>
+                    <option value="{{ hour }}">{{ hour }}</option>
                     {% endfor %}
                 </select>
                 <button type="submit">Submit</button>
@@ -784,7 +739,7 @@ with open('templates/dashboard.html', 'w') as f:
                     <tr>
                         <th>Time (UTC)</th>
                         {% for day in days %}
-                            <th>{{ day.strftime('%A') }}<br>{{ day.strftime('%Y-%m-%d') }}</th>
+                        <th>{{ day.strftime('%A') }}<br>{{ day.strftime('%Y-%m-%d') }}</th>
                         {% endfor %}
                     </tr>
                 </thead>
@@ -795,9 +750,9 @@ with open('templates/dashboard.html', 'w') as f:
                         {% for day in days %}
                         <td>
                             {% for title_name, schedule_data in schedules.items() %}
-                                {# keys like 2025-08-30T09:00:00+00:00 or without tz #}
+                                {# we save ISO keys like 2025-08-30T09:00:00 #}
                                 {% set slot_time = day.strftime('%Y-%m-%d') ~ 'T' ~ hour ~ ':00' %}
-                                {% set who = schedule_data.get(slot_time) or schedule_data.get(slot_time ~ ':00') or None %}
+                                {% set who = schedule_data.get(slot_time) %}
                                 {% if who %}
                                     <div><strong>{{ title_name }}</strong><br>{{ who }}</div>
                                 {% endif %}
@@ -816,9 +771,9 @@ with open('templates/dashboard.html', 'w') as f:
 </html>
 """)
 
+# Log page
 with open('templates/log.html', 'w') as f:
-    f.write("""
-<!DOCTYPE html>
+    f.write("""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -865,21 +820,29 @@ with open('templates/log.html', 'w') as f:
 </html>
 """)
 
+# ========= Discord lifecycle =========
 @bot.event
 async def on_ready():
     await load_state()
     await initialize_titles()
+    await rebuild_schedules_from_log()
+
     await bot.add_cog(TitleCog(bot))
     try:
-        await bot.tree.sync()
+        await bot.tree.sync()  # harmless even if no slash commands
     except Exception as e:
         logger.error(f"Slash sync failed: {e}")
+
     logger.info(f'{bot.user.name} has connected!')
     Thread(target=run_flask_app, daemon=True).start()
 
+def run_flask_app():
+    serve(app, host='0.0.0.0', port=8080)
+
+# ========= Entry =========
 if __name__ == "__main__":
-    bot_token = os.getenv("DISCORD_TOKEN")
-    if not bot_token:
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
         print("Error: DISCORD_TOKEN environment variable not set.")
     else:
-        bot.run(bot_token)
+        bot.run(token)
