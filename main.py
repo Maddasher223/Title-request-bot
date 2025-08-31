@@ -508,7 +508,7 @@ def set_shift_hours(new_hours: int):
     return SHIFT_HOURS
 
 def run_flask_app():
-    port = int(os.getenv("PORT", "8080"))  # Render-compatible
+    port = int(os.getenv("PORT", "10000"))  # Render-compatible
     serve(app, host='0.0.0.0', port=port)
 
 # ========= Templates (auto-create if missing) =========
@@ -619,11 +619,6 @@ with open('templates/dashboard.html', 'w') as f:
                                         <strong>{{ title_name }}</strong>
                                         <span class="badge">Reserved</span><br>
                                         {{ who }}
-                                        <form method="post" action="{{ url_for('cancel_schedule') }}" class="small" style="margin-top:6px;">
-                                          <input type="hidden" name="title" value="{{ title_name }}">
-                                          <input type="hidden" name="slot" value="{{ slot_time }}">
-                                          <button type="submit">Cancel</button>
-                                        </form>
                                     </div>
                                 {% endif %}
                             {% endfor %}
@@ -789,3 +784,4 @@ if __name__ == "__main__":
         print("Error: DISCORD_TOKEN environment variable not set.")
     else:
         bot.run(token)
+
