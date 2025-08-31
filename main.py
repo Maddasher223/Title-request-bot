@@ -270,10 +270,10 @@ def send_webhook_notification(data, reminder=False):
 
     if reminder:
         title = f"Reminder: {data.get('title_name','-')} shift starts soon!"
-        content = f"{role_tag} {channel_tag} ⏰ The 3-hour shift for **{data.get('title_name','-')}** by **{data.get('in_game_name','-')}** starts in 5 minutes!"
+        content = f"{role_tag} {channel_tag}  The 3-hour shift for **{data.get('title_name','-')}** by **{data.get('in_game_name','-')}** starts in 5 minutes!"
     else:
         title = "New Title Request"
-        content = f"{role_tag} {channel_tag} 👑 A new request was submitted."
+        content = f"{role_tag} {channel_tag}  A new request was submitted."
 
     payload = {
         "content": content,
@@ -376,7 +376,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                             mark_activated(title_name, iso_time)
                             try:
                                 await self.announce(
-                                    f"✅ Scheduled handoff: {title_name} is now assigned to {reserver_ign} "
+                                    f" Scheduled handoff: {title_name} is now assigned to {reserver_ign} "
                                     f"({slot_start.strftime('%H:%M')}–{slot_end.strftime('%H:%M')} UTC)."
                                 )
                                 await send_to_log_channel(self.bot,
@@ -391,7 +391,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
 
     @commands.command(help="List all titles and their status.")
     async def titles(self, ctx):
-        embed = discord.Embed(title="📜 Title Status", color=discord.Color.blue())
+        embed = discord.Embed(title=" Title Status", color=discord.Color.blue())
         for title_name in ORDERED_TITLES:
             data = state['titles'].get(title_name, {})
             details = TITLES_CATALOG.get(title_name, {})
@@ -407,7 +407,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
                 status += f"**Pending Approval for:** {claimant['name']} ({claimant['coords']})"
             else:
                 status += "**Status:** Available"
-            embed.add_field(name=f"👑 {title_name}", value=status, inline=False)
+            embed.add_field(name=f" {title_name}", value=status, inline=False)
         await ctx.send(embed=embed)
 
     @commands.command(help="Assign a title. Usage: !assign <Title Name> | <In-Game Name>")
@@ -434,7 +434,7 @@ class TitleCog(commands.Cog, name="TitleRequest"):
         })
         log_action('assign', ctx.author.id, {'title': title_name, 'ign': ign})
         await save_state()
-        await self.announce(f"🎉 SHIFT CHANGE: **{ign}** has been granted **'{title_name}'**.")
+        await self.announce(f" SHIFT CHANGE: **{ign}** has been granted **'{title_name}'**.")
         await send_to_log_channel(self.bot, f"[ASSIGN] {ctx.author.display_name} assigned {title_name} -> {ign}")
 
     @commands.command(help="Set the announcement channel. Usage: !set_announce <#channel>")
@@ -618,7 +618,7 @@ with open('templates/dashboard.html', 'w') as f:
                                     <div class="cell-booking">
                                         <strong>{{ title_name }}</strong>
                                         <span class="badge">Reserved</span><br>
-                                        {{ who }}<br>
+                                        {{ who }}
                                         <form method="post" action="{{ url_for('cancel_schedule') }}" class="small" style="margin-top:6px;">
                                           <input type="hidden" name="title" value="{{ title_name }}">
                                           <input type="hidden" name="slot" value="{{ slot_time }}">
@@ -664,7 +664,7 @@ with open('templates/log.html', 'w') as f:
 </head>
 <body>
     <div class="container">
-        <h1>📜 Request Log</h1>
+        <h1> Request Log</h1>
         <p><a href="/">Back to Dashboard</a></p>
         <table>
             <thead>
@@ -729,7 +729,7 @@ with open('templates/admin_login.html', 'w') as f:
     </form>
 
     <p class="muted" style="margin-top: 12px;">
-      <a href="{{ url_for('dashboard') }}">← Back to Dashboard</a>
+      <a href="{{ url_for('dashboard') }}"> Back to Dashboard</a>
     </p>
   </div>
 </body>

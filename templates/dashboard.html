@@ -99,12 +99,8 @@
                                     <div class="cell-booking">
                                         <strong>{{ title_name }}</strong>
                                         <span class="badge">Reserved</span><br>
-                                        {{ who }}<br>
-                                        <form method="post" action="{{ url_for('cancel_schedule') }}" class="small" style="margin-top:6px;">
-                                          <input type="hidden" name="title" value="{{ title_name }}">
-                                          <input type="hidden" name="slot" value="{{ slot_time }}">
-                                          <button type="submit">Cancel</button>
-                                        </form>
+                                        {{ who }}
+                                        <!-- Cancel button form removed as requested -->
                                     </div>
                                 {% endif %}
                             {% endfor %}
@@ -123,3 +119,4 @@
     </div>
 </body>
 </html>
+
