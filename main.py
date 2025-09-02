@@ -7,7 +7,7 @@ import logging
 import asyncio
 import requests
 import shutil
-from threading import Thread
+from threading import Thread, Event
 from datetime import datetime, timedelta, timezone
 from web_routes import register_routes
 
@@ -25,14 +25,10 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 def parse_iso_utc(s: str) -> datetime:
-    """Parse ISO strings into UTC-aware datetimes; handle naive and 'Z' suffixed."""
-    try:
-        dt = datetime.fromisoformat(s)
-    except Exception:
-        if isinstance(s, str) and s.endswith('Z'):
-            dt = datetime.fromisoformat(s[:-1])
-        else:
-            raise
+    """Parse ISO strings into UTC-aware datetimes; handle naive and 'Z' suffix."""
+    if isinstance(s, str) and s.endswith('Z'):
+        s = s[:-1]
+    dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     else:
@@ -51,7 +47,7 @@ def iso_slot_key_naive(dt: datetime) -> str:
 def normalize_iso_slot_string(s: str) -> str:
     """Accept naive or tz-aware strings; return naive 'YYYY-MM-DDTHH:MM:00'."""
     try:
-        dt = datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(s.rstrip('Z'))
     except Exception:
         return s
     return iso_slot_key_naive(dt)
@@ -110,7 +106,7 @@ ADMIN_PIN = os.getenv("ADMIN_PIN", "letmein")
 
 # ========= Discord setup =========
 intents = discord.Intents.default()
-intents.members = True       # must be enabled in Developer Portal
+intents.members = True       # must also be enabled in Developer Portal
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
@@ -596,6 +592,13 @@ def run_flask_app():
     port = int(os.getenv("PORT", "10000"))
     serve(app, host='0.0.0.0', port=port)
 
+# start Flask exactly once (before Discord connects)
+_flask_started_evt = Event()
+def start_flask_once():
+    if not _flask_started_evt.is_set():
+        Thread(target=run_flask_app, daemon=True).start()
+        _flask_started_evt.set()
+
 # ========= Templates (auto-create if missing) =========
 os.makedirs('templates', exist_ok=True)
 
@@ -900,24 +903,36 @@ register_routes(
         compute_next_reservation_for_title=compute_next_reservation_for_title,
         get_all_upcoming_reservations=get_all_upcoming_reservations,
         set_shift_hours=set_shift_hours,
-        get_shift_hours=get_shift_hours,   # NEW: share getter with routes
+        get_shift_hours=get_shift_hours,   # share getter with routes
         bot=bot,
     )
 )
 
 # ========= Discord lifecycle =========
+_cog_loaded = False
+
 @bot.event
 async def on_ready():
-    await load_state()
-    await initialize_titles()
-    await rebuild_schedules_from_log()
+    global _cog_loaded
+    try:
+        await load_state()
+        await initialize_titles()
+        await rebuild_schedules_from_log()
 
-    await bot.add_cog(TitleCog(bot))
-    logger.info(f'{bot.user.name} has connected!')
-    Thread(target=run_flask_app, daemon=True).start()
+        if not _cog_loaded:
+            # add_cog is synchronous in discord.py/py-cord 2.x
+            bot.add_cog(TitleCog(bot))
+            _cog_loaded = True
+
+        logger.info(f'{bot.user.name} has connected!')
+    except Exception as e:
+        logger.exception(f"on_ready failed: {e}")
 
 # ========= Entry =========
 if __name__ == "__main__":
+    # Ensure Flask binds PORT early so Render detects an open port even if Discord errors/reconnects
+    start_flask_once()
+
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         print("Error: DISCORD_TOKEN environment variable not set.")
