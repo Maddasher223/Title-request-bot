@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <title>Title Requestor</title>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='icons/title-requestor.png') }}">
+    <!-- Optional: auto-refresh every 60s -->
+    <!-- <meta http-equiv="refresh" content="60"> -->
     <style>
         body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
         .container { max-width: 1400px; margin: auto; }
@@ -28,14 +30,17 @@
 <body>
     <div class="container">
         <h1>
-            <img src="{{ url_for('static', filename='icons/title-requestor.png') }}" width="32" height="32" style="vertical-align: middle; margin-right: 8px;">
+            <img src="{{ url_for('static', filename='icons/title-requestor.png') }}" width="32" height="32" alt="App icon" style="vertical-align: middle; margin-right: 8px;">
             Title Requestor
         </h1>
 
         <div class="title-grid">
             {% for title in titles %}
             <div class="title-card">
-                <h3><img src="{{ title.icon }}" width="24" height="24">{{ title.name }}</h3>
+                <h3>
+                  <img src="{{ title.icon }}" width="24" height="24" alt="{{ title.name }} icon">
+                  {{ title.name }}
+                </h3>
                 <p><em>{{ title.buffs }}</em></p>
                 <p><strong>Holder:</strong> {{ title.holder }}</p>
                 <p><strong>Expires:</strong> {{ title.expires_in }}</p>
@@ -45,18 +50,18 @@
         </div>
 
         <div class="form-card">
-            <h2>Reserve a 3-hour Slot</h2>
+            <h2>Reserve a {{ (config.shift_hours or 3) if config else 3 }}-hour Slot</h2>
             <div class="utc-note">All times are in <strong>UTC</strong>. The grid below updates immediately when reserved.</div>
-            <form action="/book-slot" method="POST">
-                <select name="title" required>
+            <form action="{{ url_for('book_slot') }}" method="POST">
+                <select name="title" required aria-label="Title">
                     {% for t in requestable_titles %}
                     <option value="{{ t }}">{{ t }}</option>
                     {% endfor %}
                 </select>
-                <input type="text" name="ign" placeholder="In-Game Name" required>
-                <input type="text" name="coords" placeholder="X:Y Coordinates" required>
-                <input type="date" name="date" value="{{ today }}" required>
-                <select name="time" required>
+                <input type="text" name="ign" placeholder="In-Game Name" required aria-label="In-Game Name">
+                <input type="text" name="coords" placeholder="X:Y Coordinates" required aria-label="Coordinates">
+                <input type="date" name="date" value="{{ today }}" required aria-label="Date">
+                <select name="time" required aria-label="Start time (UTC)">
                     {% for hour in hours %}
                     <option value="{{ hour }}">{{ hour }}</option>
                     {% endfor %}
@@ -77,29 +82,32 @@
               {% endif %}
             {% endwith %}
             <div class="utc-note">Cells show <em>reservations</em> immediately (Reserved = taken) and assignments when active.</div>
-            <table>
+            <table role="grid" aria-label="Upcoming schedule">
                 <thead>
                     <tr>
-                        <th>Time (UTC)</th>
+                        <th scope="col">Time (UTC)</th>
                         {% for day in days %}
-                        <th>{{ day.strftime('%A') }}<br>{{ day.strftime('%Y-%m-%d') }}</th>
+                        <th scope="col">{{ day.strftime('%A') }}<br>{{ day.strftime('%Y-%m-%d') }}</th>
                         {% endfor %}
                     </tr>
                 </thead>
                 <tbody>
                     {% for hour in hours %}
                     <tr>
-                        <td>{{ hour }}</td>
+                        <th scope="row">{{ hour }}</th>
                         {% for day in days %}
                         <td>
                             {% set slot_time = day.strftime('%Y-%m-%d') ~ 'T' ~ hour ~ ':00' %}
                             {% for title_name, schedule_data in schedules.items() %}
-                                {% set who = schedule_data.get(slot_time) %}
-                                {% if who %}
+                                {% set reservation = schedule_data.get(slot_time) %}
+                                {% if reservation %}
                                     <div class="cell-booking">
                                         <strong>{{ title_name }}</strong>
                                         <span class="badge">Reserved</span><br>
-                                        {{ who }}
+                                        {{ reservation.ign if reservation is mapping else reservation }}
+                                        {% if reservation is mapping and reservation.coords %}
+                                            <br><span class="small">({{ reservation.coords }})</span>
+                                        {% endif %}
                                     </div>
                                 {% endif %}
                             {% endfor %}
@@ -118,4 +126,3 @@
     </div>
 </body>
 </html>
-

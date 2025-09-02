@@ -14,7 +14,7 @@ def register_routes(app, deps):
         state, save_state, log_action, log_to_csv, send_webhook_notification, send_to_log_channel,
         parse_iso_utc, now_utc, iso_slot_key_naive, in_current_slot, title_is_vacant_now,
         compute_next_reservation_for_title, get_all_upcoming_reservations, set_shift_hours,
-        bot
+        get_shift_hours, bot
       }
     """
     # ----- Unpack deps -----
@@ -39,13 +39,14 @@ def register_routes(app, deps):
     compute_next_reservation_for_title = deps['compute_next_reservation_for_title']
     get_all_upcoming_reservations = deps['get_all_upcoming_reservations']
     set_shift_hours = deps['set_shift_hours']
+    get_shift_hours = deps['get_shift_hours']
 
     bot = deps['bot']
     UTC = timezone.utc
 
     # ----- Helpers -----
     def schedule_on_bot_loop(coro):
-        """Run an async coroutine safely on the Discord bot loop from Flask thread."""
+        """Run an async coroutine safely on the Discord bot loop from Flask thread and return its Future."""
         try:
             return asyncio.run_coroutine_threadsafe(coro, bot.loop)
         except Exception:
@@ -54,13 +55,13 @@ def register_routes(app, deps):
     def is_admin() -> bool:
         return bool(session.get("is_admin"))
 
-    def get_shift_hours():
-        cfg = state.get('config', {})
-        val = cfg.get('shift_hours')
-        try:
-            return int(val) if val is not None else 3
-        except Exception:
-            return 3
+    def _reservation_to_ign(reservation):
+        return reservation.get('ign') if isinstance(reservation, dict) else str(reservation)
+
+    def _reservation_to_coords(reservation):
+        if isinstance(reservation, dict):
+            return reservation.get('coords', '-')
+        return '-'
 
     # ----- ALWAYS ensure state shape before any request -----
     @app.before_request
@@ -127,6 +128,7 @@ def register_routes(app, deps):
         hours = [f"{h:02d}:00" for h in range(0, 24, 3)]  # 3h grid for visibility
         schedules = state.get('schedules', {})
         requestable_titles = REQUESTABLE
+        cfg = state.get('config', {})
 
         return render_template(
             'dashboard.html',
@@ -135,7 +137,8 @@ def register_routes(app, deps):
             hours=hours,
             schedules=schedules,
             today=today.strftime('%Y-%m-%d'),
-            requestable_titles=requestable_titles
+            requestable_titles=requestable_titles,
+            config=cfg  # so the template can show current shift hours
         )
 
     @app.route("/log")
@@ -174,18 +177,21 @@ def register_routes(app, deps):
 
         schedule_key = iso_slot_key_naive(schedule_time)
 
-        # Only block same title + same slot
-        schedules_for_title = state.setdefault('schedules', {}).setdefault(title_name, {})
-        if schedule_key in schedules_for_title:
-            flash(f"That slot for {title_name} is already reserved by {schedules_for_title[schedule_key]}.")
-            return redirect(url_for("dashboard"))
+        # Perform the reservation on the bot loop (single-thread the mutations)
+        async def _reserve_and_maybe_assign_now():
+            schedules_for_title = state.setdefault('schedules', {}).setdefault(title_name, {})
+            if schedule_key in schedules_for_title:
+                return False, schedules_for_title[schedule_key]
 
-        # Reserve immediately (shows as taken in grid)
-        schedules_for_title[schedule_key] = ign
-        log_action('schedule_book_web', 0, {'title': title_name, 'time': schedule_key, 'ign': ign})
+            # Always store a dict with IGN + coords
+            schedules_for_title[schedule_key] = {"ign": ign, "coords": coords or "-"}
 
-        # If current slot and vacant, grant now
-        try:
+            # Log
+            log_action('schedule_book_web', 0, {
+                'title': title_name, 'time': schedule_key, 'ign': ign, 'coords': coords or '-'
+            })
+
+            # If current slot and vacant, grant now
             hours = get_shift_hours()
             if (schedule_time <= now_utc() < schedule_time + timedelta(hours=hours)) and title_is_vacant_now(title_name):
                 end = schedule_time + timedelta(hours=hours)
@@ -197,10 +203,22 @@ def register_routes(app, deps):
                     'pending_claimant': None
                 })
                 log_action('auto_assign_now', 0, {'title': title_name, 'ign': ign, 'start': schedule_time.isoformat()})
-        except Exception:
-            pass
 
-        # CSV + webhook + persist + log
+            await save_state()
+            return True, None
+
+        fut = schedule_on_bot_loop(_reserve_and_maybe_assign_now())
+        try:
+            ok, existing_val = fut.result(timeout=3) if fut else (False, None)
+        except Exception:
+            ok, existing_val = (False, None)
+
+        if not ok:
+            existing_ign = _reservation_to_ign(existing_val) if existing_val is not None else "unknown"
+            flash(f"That slot for {title_name} is already reserved by {existing_ign}.")
+            return redirect(url_for("dashboard"))
+
+        # CSV + webhook + async log-channel send
         csv_data = {
             "timestamp": now_utc().isoformat(),
             "title_name": title_name,
@@ -215,11 +233,7 @@ def register_routes(app, deps):
             pass
 
         try:
-            asyncio.run_coroutine_threadsafe(save_state(), bot.loop)
-            asyncio.run_coroutine_threadsafe(
-                send_to_log_channel(bot, f"[SCHEDULE:WEB] reserved {title_name} for {ign} @ {date_str} {time_str} UTC"),
-                bot.loop
-            )
+            schedule_on_bot_loop(send_to_log_channel(bot, f"[SCHEDULE:WEB] reserved {title_name} for {ign} @ {date_str} {time_str} UTC"))
         except Exception:
             pass
 
@@ -293,8 +307,7 @@ def register_routes(app, deps):
             "log_channel": cfg.get("log_channel"),
             "shift_hours": cfg.get("shift_hours", get_shift_hours()),
         }
-        
-        # *** FIX IS HERE ***
+
         # Provide the list of all titles for the manual assignment form
         all_titles = ORDERED_TITLES
 
@@ -304,7 +317,7 @@ def register_routes(app, deps):
             upcoming=upcoming,
             logs=reversed(logs),
             settings=current_settings,
-            all_titles=all_titles  # Pass the list to the template
+            all_titles=all_titles
         )
 
     @app.route("/admin/approve", methods=["POST"])
@@ -315,19 +328,28 @@ def register_routes(app, deps):
         title = (request.form.get("title") or "").strip()
         slot  = (request.form.get("slot") or "").strip()
 
-        sched = state.get("schedules", {}).get(title, {})
-        if not (title and slot and slot in sched):
+        async def _approve():
+            sched = state.get("schedules", {}).get(title, {})
+            if not (title and slot and slot in sched):
+                return False, None
+            state.setdefault("approvals", {}).setdefault(title, {})[slot] = True
+            await save_state()
+            return True, sched[slot]
+
+        fut = schedule_on_bot_loop(_approve())
+        ok, reserved = (False, None)
+        try:
+            ok, reserved = fut.result(timeout=3) if fut else (False, None)
+        except Exception:
+            ok = False
+
+        if not ok:
             flash("Reservation not found")
             return redirect(url_for("admin_home"))
 
-        state.setdefault("approvals", {}).setdefault(title, {})[slot] = True
-
+        reserved_ign = _reservation_to_ign(reserved)
         try:
-            asyncio.run_coroutine_threadsafe(save_state(), bot.loop)
-            asyncio.run_coroutine_threadsafe(
-                send_to_log_channel(bot, f"[ADMIN] Approved {title} @ {slot} for {sched[slot]}"),
-                bot.loop
-            )
+            schedule_on_bot_loop(send_to_log_channel(bot, f"[ADMIN] Approved {title} @ {slot} for {reserved_ign}"))
         except Exception:
             pass
 
@@ -342,29 +364,37 @@ def register_routes(app, deps):
         title = (request.form.get("title") or "").strip()
         slot = (request.form.get("slot") or "").strip()
 
-        sched = state.get("schedules", {}).get(title, {})
-        if not (title and slot and slot in sched):
+        async def _cancel():
+            sched = state.get("schedules", {}).get(title, {})
+            if not (title and slot and slot in sched):
+                return False, None
+            reserved = sched[slot]
+            del sched[slot]
+            # remove approval flag if present
+            ap = state.get("approvals", {}).get(title, {})
+            if slot in ap:
+                del ap[slot]
+            await save_state()
+            return True, reserved
+
+        fut = schedule_on_bot_loop(_cancel())
+        ok, reserved = (False, None)
+        try:
+            ok, reserved = fut.result(timeout=3) if fut else (False, None)
+        except Exception:
+            ok = False
+
+        if not ok:
             flash("Reservation not found")
             return redirect(url_for("admin_home"))
 
-        ign = sched[slot]
-        del sched[slot]
-
-        # remove approval flag if present
-        ap = state.get("approvals", {}).get(title, {})
-        if slot in ap:
-            del ap[slot]
-
+        reserved_ign = _reservation_to_ign(reserved)
         try:
-            asyncio.run_coroutine_threadsafe(save_state(), bot.loop)
-            asyncio.run_coroutine_threadsafe(
-                send_to_log_channel(bot, f"[ADMIN] Cancel {title} @ {slot} (was {ign})"),
-                bot.loop
-            )
+            schedule_on_bot_loop(send_to_log_channel(bot, f"[ADMIN] Cancel {title} @ {slot} (was {reserved_ign})"))
         except Exception:
             pass
 
-        flash(f"Cancelled {title} @ {slot} (was {ign})")
+        flash(f"Cancelled {title} @ {slot} (was {reserved_ign})")
         return redirect(url_for("admin_home"))
 
     @app.route("/admin/force-release", methods=["POST"])
@@ -372,21 +402,31 @@ def register_routes(app, deps):
         if not is_admin():
             return redirect(url_for("admin_login_form"))
         title = (request.form.get("title") or "").strip()
-        if title not in state.get("titles", {}):
+
+        async def _force_release():
+            if title not in state.get("titles", {}):
+                return False
+            state["titles"][title].update({
+                'holder': None,
+                'claim_date': None,
+                'expiry_date': None,
+                'pending_claimant': None
+            })
+            await save_state()
+            return True
+
+        fut = schedule_on_bot_loop(_force_release())
+        try:
+            ok = fut.result(timeout=3) if fut else False
+        except Exception:
+            ok = False
+
+        if not ok:
             flash(f"Title '{title}' not found.")
             return redirect(url_for("admin_home"))
 
-        state["titles"][title].update({
-            'holder': None,
-            'claim_date': None,
-            'expiry_date': None,
-            'pending_claimant': None
-        })
         try:
-            asyncio.run_coroutine_threadsafe(save_state(), bot.loop)
-            asyncio.run_coroutine_threadsafe(
-                send_to_log_channel(bot, f"[ADMIN] Force released {title}"),
-                bot.loop)
+            schedule_on_bot_loop(send_to_log_channel(bot, f"[ADMIN] Force released {title}"))
         except Exception:
             pass
         flash(f"Force-released title '{title}'.")
@@ -400,29 +440,37 @@ def register_routes(app, deps):
         ign = (request.form.get("ign") or "").strip()
         coords = (request.form.get("coords") or "-").strip()
 
-        if not (title and ign and title in state.get("titles", {})):
+        async def _assign():
+            if not (title and ign and title in state.get("titles", {})):
+                return False
+            hours = get_shift_hours()
+            now = now_utc()
+            end = now + timedelta(hours=hours)
+            state["titles"][title].update({
+                "holder": {"name": ign, "coords": coords, "discord_id": 0},
+                "claim_date": now.isoformat(),
+                "expiry_date": end.isoformat(),
+                "pending_claimant": None
+            })
+            await save_state()
+            return True
+
+        fut = schedule_on_bot_loop(_assign())
+        try:
+            ok = fut.result(timeout=3) if fut else False
+        except Exception:
+            ok = False
+
+        if not ok:
             flash("Bad manual assignment request. Title and IGN are required.")
             return redirect(url_for("admin_home"))
 
-        hours = get_shift_hours()
-        now = now_utc()
-        end = now + timedelta(hours=hours)
-        state["titles"][title].update({
-            "holder": {"name": ign, "coords": coords, "discord_id": 0},
-            "claim_date": now.isoformat(),
-            "expiry_date": end.isoformat(),
-            "pending_claimant": None
-        })
         try:
-            asyncio.run_coroutine_threadsafe(save_state(), bot.loop)
-            asyncio.run_coroutine_threadsafe(
-                send_to_log_channel(bot, f"[ADMIN] MANUALLY ASSIGNED {title} -> {ign}"),
-                bot.loop)
+            schedule_on_bot_loop(send_to_log_channel(bot, f"[ADMIN] MANUALLY ASSIGNED {title} -> {ign}"))
         except Exception:
             pass
         flash(f"Manually assigned {title} to {ign}")
         return redirect(url_for("admin_home"))
-
 
     @app.route("/admin/assign-now", methods=["POST"])
     def admin_assign_now():
@@ -432,26 +480,33 @@ def register_routes(app, deps):
         title = (request.form.get("title") or "").strip()
         ign = (request.form.get("ign") or "").strip()
 
-        if not (title and ign and title in state.get("titles", {})):
+        async def _assign_now():
+            if not (title and ign and title in state.get("titles", {})):
+                return False
+            hours = get_shift_hours()
+            now = now_utc()
+            end = now + timedelta(hours=hours)
+            state["titles"][title].update({
+                "holder": {"name": ign, "coords": "-", "discord_id": 0},
+                "claim_date": now.isoformat(),
+                "expiry_date": end.isoformat(),
+                "pending_claimant": None
+            })
+            await save_state()
+            return True
+
+        fut = schedule_on_bot_loop(_assign_now())
+        try:
+            ok = fut.result(timeout=3) if fut else False
+        except Exception:
+            ok = False
+
+        if not ok:
             flash("Bad assign request")
             return redirect(url_for("admin_home"))
 
-        hours = get_shift_hours()
-        now = now_utc()
-        end = now + timedelta(hours=hours)
-        state["titles"][title].update({
-            "holder": {"name": ign, "coords": "-", "discord_id": 0},
-            "claim_date": now.isoformat(),
-            "expiry_date": end.isoformat(),
-            "pending_claimant": None
-        })
-
         try:
-            asyncio.run_coroutine_threadsafe(save_state(), bot.loop)
-            asyncio.run_coroutine_threadsafe(
-                send_to_log_channel(bot, f"[ADMIN] Assign-now {title} -> {ign}"),
-                bot.loop
-            )
+            schedule_on_bot_loop(send_to_log_channel(bot, f"[ADMIN] Assign-now {title} -> {ign}"))
         except Exception:
             pass
 
@@ -468,34 +523,39 @@ def register_routes(app, deps):
         new_title = (request.form.get("new_title") or "").strip()
         new_slot = (request.form.get("new_slot") or "").strip()
 
-        if not (title and slot and new_title and new_slot):
-            flash("Missing info")
-            return redirect(url_for("admin_home"))
+        async def _move():
+            if not (title and slot and new_title and new_slot):
+                return False, "Missing info"
+            sched = state.get("schedules", {}).get(title, {})
+            if slot not in sched:
+                return False, "Original reservation not found"
+            reserved = sched[slot]
+            del sched[slot]
+            state.setdefault("schedules", {}).setdefault(new_title, {})[new_slot] = reserved
+            # approval cleanup (not carried to new slot by default)
+            old_ap = state.get("approvals", {}).setdefault(title, {})
+            if slot in old_ap:
+                del old_ap[slot]
+            await save_state()
+            return True, reserved
 
-        sched = state.get("schedules", {}).get(title, {})
-        if slot not in sched:
-            flash("Original reservation not found")
-            return redirect(url_for("admin_home"))
-
-        ign = sched[slot]
-        del sched[slot]
-        state.setdefault("schedules", {}).setdefault(new_title, {})[new_slot] = ign
-
-        # approval cleanup (not carried to new slot by default)
-        old_ap = state.get("approvals", {}).setdefault(title, {})
-        if slot in old_ap:
-            del old_ap[slot]
-
+        fut = schedule_on_bot_loop(_move())
         try:
-            asyncio.run_coroutine_threadsafe(save_state(), bot.loop)
-            asyncio.run_coroutine_threadsafe(
-                send_to_log_channel(bot, f"[ADMIN] Move {ign} {title}@{slot} → {new_title}@{new_slot}"),
-                bot.loop
-            )
+            ok, reserved = fut.result(timeout=3) if fut else (False, None)
+        except Exception:
+            ok, reserved = (False, None)
+
+        if not ok:
+            flash("Missing info" if reserved == "Missing info" else "Original reservation not found")
+            return redirect(url_for("admin_home"))
+
+        reserved_ign = _reservation_to_ign(reserved)
+        try:
+            schedule_on_bot_loop(send_to_log_channel(bot, f"[ADMIN] Move {reserved_ign} {title}@{slot} → {new_title}@{new_slot}"))
         except Exception:
             pass
 
-        flash(f"Moved {ign} from {title}@{slot} → {new_title}@{new_slot}")
+        flash(f"Moved {reserved_ign} from {title}@{slot} → {new_title}@{new_slot}")
         return redirect(url_for("admin_home"))
 
     @app.route("/admin/settings", methods=["POST"])
@@ -507,30 +567,47 @@ def register_routes(app, deps):
         logch = (request.form.get("log_channel") or "").strip()
         shift = (request.form.get("shift_hours") or "").strip()
 
-        cfg = state.setdefault("config", {})
-        if announce:
-            try:
-                cfg["announcement_channel"] = int(announce)
-            except ValueError:
-                flash("Announcement channel must be a numeric ID.")
-        if logch:
-            try:
-                cfg["log_channel"] = int(logch)
-            except ValueError:
-                flash("Log channel must be a numeric ID.")
+        async def _apply_settings():
+            cfg = state.setdefault("config", {})
+            if announce:
+                try:
+                    cfg["announcement_channel"] = int(announce)
+                except ValueError:
+                    # we'll set a flash outside; do not fail here
+                    pass
+            if logch:
+                try:
+                    cfg["log_channel"] = int(logch)
+                except ValueError:
+                    pass
+            if shift:
+                try:
+                    cfg["shift_hours"] = int(shift)
+                    set_shift_hours(cfg["shift_hours"])  # updates global + persists in state
+                except ValueError:
+                    pass
+            await save_state()
+            return True
+
+        # Keep user feedback for bad inputs via flash (outside the coroutine)
+        if announce and not announce.isdigit():
+            flash("Announcement channel must be a numeric ID.")
+        if logch and not logch.isdigit():
+            flash("Log channel must be a numeric ID.")
         if shift:
             try:
-                cfg["shift_hours"] = int(shift)
-                set_shift_hours(cfg["shift_hours"])
+                int(shift)
             except ValueError:
                 flash("Shift hours must be an integer.")
 
+        fut = schedule_on_bot_loop(_apply_settings())
         try:
-            asyncio.run_coroutine_threadsafe(save_state(), bot.loop)
-            asyncio.run_coroutine_threadsafe(
-                send_to_log_channel(bot, "[ADMIN] Settings updated"),
-                bot.loop
-            )
+            _ = fut.result(timeout=3) if fut else None
+        except Exception:
+            pass
+
+        try:
+            schedule_on_bot_loop(send_to_log_channel(bot, "[ADMIN] Settings updated"))
         except Exception:
             pass
 
