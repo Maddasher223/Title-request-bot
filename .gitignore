@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+titles_state.json
+log.json
+requests.csv
+data/

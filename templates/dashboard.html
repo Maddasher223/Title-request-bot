@@ -1,128 +1,413 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Title Requestor</title>
-    <link rel="icon" type="image/png" href="{{ url_for('static', filename='icons/title-requestor.png') }}">
-    <!-- Optional: auto-refresh every 60s -->
-    <!-- <meta http-equiv="refresh" content="60"> -->
-    <style>
-        body { font-family: sans-serif; background-color: #36393f; color: #dcddde; margin: 2em; }
-        .container { max-width: 1400px; margin: auto; }
-        .title-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
-        .title-card { background-color: #2f3136; border-radius: 8px; padding: 15px; border-left: 5px solid #7289da; }
-        .badge { display:inline-block; padding:2px 6px; border-radius:4px; background:#3b82f6; color:#fff; font-size:11px; margin-left:6px;}
-        .form-card, .schedule-card { background-color: #2f3136; padding: 20px; border-radius: 8px; margin-top: 2em; }
-        h1, h2 { color: #ffffff; }
-        h3 { display: flex; align-items: center; margin-top: 0; }
-        h3 img { margin-right: 10px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 1em; }
-        th, td { border: 1px solid #40444b; padding: 8px; text-align: center; vertical-align: top; }
-        input, select, button { padding: 10px; margin: 5px; border-radius: 5px; border: 1px solid #555; background-color: #40444b; color: #dcddde; }
-        button { background-color: #7289da; cursor: pointer; font-weight: bold; }
-        a { color: #7289da; }
-        .small { font-size: 12px; }
-        .cell-booking { background:#23262a; border:1px solid #3a3f44; padding:6px; border-radius:6px; margin-bottom:8px;}
-        .utc-note { font-size:12px; opacity:0.8; margin-top:4px;}
-        .footer-links { text-align:center; margin-top:2em;}
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Server 1041 Temple Title Request Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caudex:wght@700&family=Public+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      /* Backgrounds & surfaces */
+      --parchment-dark:#0f141a;
+      --parchment-light:#111821;
+      --ink-text:#e7edf4;
+      --ink-muted:#9cb0c3;
+      --ink-bright:#fff;
+      --brush-stroke-border:#2a3a49;
+
+      /* Water Tribe palette */
+      --water-tribe-100:#bfe0f2;
+      --water-tribe-300:#6ea9c9;
+      --water-tribe-500:#3d7ea6;
+      --water-tribe-700:#2d5977;
+
+      /* Brand / interactive */
+      --focus-gold:#a7c7df;          /* cool focus tone */
+      --button-gold:var(--water-tribe-500);
+      --button-gold-hover:#336f93;
+
+      /* Element accent edges */
+      --fire-nation-red:#d44a3a;
+      --water-tribe-blue:var(--water-tribe-500);
+      --earth-kingdom-green:#6aa05d;
+      --air-nomad-grey:#a0a09e;
+      --harmony-gold:#b7d2e6;
+      --generic-gold:#9cc4db;
+
+      /* Effects */
+      --shadow:0 8px 26px rgba(0,0,0,.45);
+      --ring: rgba(61,126,166,.35);  /* NEW: used for focus rings */
+    }
+
+    html,body{height:100%}
+    body{
+      font-family:'Public Sans',system-ui,sans-serif;
+      background-color:var(--parchment-dark);
+      background-image:
+        radial-gradient(60rem 60rem at 10% 0%, rgba(99,140,168,.12), transparent 55%),
+        radial-gradient(40rem 40rem at 100% 100%, rgba(61,126,166,.10), transparent 60%);
+      color:var(--ink-text); margin:0; padding:2rem; line-height:1.6;
+    }
+    .container{max-width:1600px;margin:0 auto;display:grid;gap:2rem}
+
+    h1,h2,h3{font-family:'Caudex',serif;color:var(--ink-bright);margin:0;font-weight:600}
+    h1{display:flex;align-items:center;gap:12px;font-size:1.85rem}
+    h2{display:flex;justify-content:space-between;align-items:center;font-size:1.35rem;border-bottom:2px solid var(--brush-stroke-border);padding-bottom:.65rem;letter-spacing:.4px}
+    h3{color:var(--ink-bright);margin:0;font-weight:600;font-size:1.05rem}
+
+    a{color:var(--focus-gold);text-decoration:none;font-weight:600}
+    a:hover{text-decoration:underline}
+
+    .card{background:var(--parchment-light);border:1px solid var(--brush-stroke-border);border-radius:10px;padding:22px;box-shadow:var(--shadow)}
+
+    /* Flash list reset (RESTORED) */
+    .flash-list{margin:0;padding:0;list-style:none}
+
+    /* Base flash */
+    .flash{
+      padding:12px 14px;border-radius:10px;font-weight:700;line-height:1.4;
+      box-shadow:0 6px 18px rgba(0,0,0,.25);
+    }
+    .flash.message,.flash.info{
+      background:linear-gradient(180deg, rgba(99,140,168,.18), rgba(61,126,166,.16));
+      border:1px solid var(--water-tribe-500); color:var(--ink-text);
+    }
+    .flash.success{
+      background:linear-gradient(180deg, rgba(70,164,144,.18), rgba(70,164,144,.12));
+      border:1px solid #46A490; color:#e9fbf6;
+    }
+    .flash.warning{
+      background:linear-gradient(180deg, rgba(227,178,75,.20), rgba(227,178,75,.12));
+      border:1px solid #E3B24B; color:#fff7e6;
+    }
+    .flash.error{
+      background:linear-gradient(180deg, rgba(215,78,61,.22), rgba(215,78,61,.14));
+      border:1px solid var(--fire-nation-red); color:#fff;
+    }
+    .flash a{color:#e3f2ff;text-decoration:underline;font-weight:700}
+    .flash a:hover{text-decoration:none}
+    .flash:focus{outline:none;box-shadow:0 0 0 4px var(--ring)}
+
+    .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
+    .title-card{background:var(--parchment-dark);border:1px solid var(--brush-stroke-border);border-left:5px solid;border-radius:10px;padding:16px;position:relative;transition:transform .2s ease-out}
+    .title-card:hover{transform:translateY(-3px)}
+    .title-card h3{display:flex;align-items:center;gap:10px;margin:0 0 .5rem}
+    .title-card p{margin:.25rem 0 0;font-size:.95rem;color:var(--ink-muted)}
+    .title-card p strong{color:var(--ink-text);font-weight:700}
+    .title-effects{position:absolute;top:0;right:0;background:var(--parchment-dark);border-left:1px solid var(--brush-stroke-border);border-bottom:1px solid var(--brush-stroke-border);border-radius:0 10px 0 10px;padding:6px 10px;font-size:.8rem;color:var(--ink-muted);font-weight:500;opacity:0;visibility:hidden;transition:opacity .2s}
+    .title-card:hover .title-effects{opacity:1;visibility:visible}
+    .title-guardian-of-fire{border-left-color:var(--fire-nation-red)}
+    .title-guardian-of-water{border-left-color:var(--water-tribe-blue)}
+    .title-guardian-of-earth{border-left-color:var(--earth-kingdom-green)}
+    .title-guardian-of-air{border-left-color:var(--air-nomad-grey)}
+    .title-guardian-of-harmony{border-left-color:var(--harmony-gold)}
+    .title-architect,.title-general,.title-governor,.title-prefect{border-left-color:var(--generic-gold)}
+
+    .form-grid{display:grid;grid-template-columns:2fr 2fr 1.5fr 1.5fr 1fr 1fr;gap:14px;align-items:end}
+    .form-grid > div{display:flex;flex-direction:column}
+    label{font-size:.9rem;font-weight:600;color:var(--ink-muted);display:block;margin-bottom:6px}
+    input,select,button{width:100%;padding:12px;border-radius:8px;border:1px solid var(--brush-stroke-border);background:var(--parchment-dark);color:var(--ink-text);box-sizing:border-box;font-size:1rem;transition:border-color .2s,box-shadow .2s,background-color .2s}
+    input:focus,select:focus{outline:none;border-color:var(--focus-gold);box-shadow:0 0 0 3px var(--ring)}
+    /* Use Caudex for CTA to match headings (Cinzel removed) */
+    button{background:var(--button-gold);color:#0c1720;font-weight:800;border:none;cursor:pointer;font-family:'Caudex',serif;font-size:1.05rem;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+    button:hover{background:var(--button-gold-hover)}
+    button:active{transform:scale(.985)}
+    button svg{width:1.2em;height:1.2em}
+
+    .timezone-table{width:100%;border-collapse:collapse;margin-top:1rem}
+    .timezone-table th,.timezone-table td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--brush-stroke-border)}
+    .timezone-table th{font-family:'Caudex',serif;color:var(--ink-muted);font-weight:500;font-size:.9rem;border-bottom-width:2px}
+    /* tweak highlight to water tone */
+    .timezone-table tr.user-local-time{background-color:rgba(61,126,166,.12);border-left:3px solid var(--water-tribe-500)}
+    .tz-dayflag{display:inline-block;margin-left:8px;padding:2px 8px;font-size:.75rem;border-radius:999px;background:rgba(61,126,166,.15);border:1px solid rgba(61,126,166,.35);color:var(--ink-muted);vertical-align:middle}
+
+    .schedule-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(350px,1fr));gap:2rem;margin-top:1rem}
+    .schedule-day h3{font-family:'Public Sans',sans-serif;font-size:1.1rem;color:var(--ink-bright);padding-bottom:.5rem;border-bottom:1px solid var(--brush-stroke-border);margin-bottom:1rem}
+    .schedule-slot{margin-bottom:1.5rem}
+    .slot-time{font-weight:700;font-size:1rem;color:var(--ink-muted)}
+    .reservation-card{background:var(--parchment-dark);border:1px solid var(--brush-stroke-border);border-left:4px solid var(--generic-gold);border-radius:8px;padding:12px;margin-top:8px}
+    .reservation-card p{margin:2px 0;font-size:.95rem}
+    .reservation-card strong{color:var(--ink-bright)}
+    .res-fire{border-left-color:var(--fire-nation-red)}
+    .res-water{border-left-color:var(--water-tribe-blue)}
+    .res-earth{border-left-color:var(--earth-kingdom-green)}
+    .res-air{border-left-color:var(--air-nomad-grey)}
+    .res-harmony{border-left-color:var(--harmony-gold)}
+
+    .filter-row{display:flex;align-items:center;gap:12px;margin-bottom:1rem}
+    .filter-row label{margin:0}
+    .filter-row select{max-width:320px}
+
+    .footer-links{text-align:center;font-size:.9rem;color:var(--ink-muted)}
+    .footer-links p{margin:.75rem 0 0}
+
+    @media (max-width:1200px){.form-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}}
+    @media (max-width:992px){body{padding:1.5rem}}
+    @media (max-width:768px){
+      body{padding:1rem}
+      .container{gap:1.5rem}
+      .card{padding:18px}
+      .status-grid{grid-template-columns:1fr}
+      .timezone-table th,.timezone-table td{padding:10px}
+      .filter-row{flex-direction:column;align-items:flex-start}
+      .filter-row select{width:100%;max-width:none}
+    }
+    @media (max-width:480px){h1{font-size:1.35rem;gap:10px} input,select,button{font-size:1rem}}
+  </style>
 </head>
 <body>
-    <div class="container">
-        <h1>
-            <img src="{{ url_for('static', filename='icons/title-requestor.png') }}" width="32" height="32" alt="App icon" style="vertical-align: middle; margin-right: 8px;">
-            Title Requestor
-        </h1>
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <h1>
+        <img src="{{ url_for('static', filename='icons/title-requestor.png') }}" width="32" height="32" alt="Title Requestor icon" />
+        Server 1041 Temple Title Request Dashboard
+      </h1>
+    </header>
 
-        <div class="title-grid">
-            {% for title in titles %}
-            <div class="title-card">
-                <h3>
-                  <img src="{{ title.icon }}" width="24" height="24" alt="{{ title.name }} icon">
-                  {{ title.name }}
-                </h3>
-                <p><em>{{ title.buffs }}</em></p>
-                <p><strong>Holder:</strong> {{ title.holder }}</p>
-                <p><strong>Expires:</strong> {{ title.expires_in }}</p>
-                <p><strong>Next reserved:</strong> {{ title.next_reserved if title.next_reserved else "—" }}</p>
-            </div>
-            {% endfor %}
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages(with_categories=True) %}
+      {% if messages %}
+        <ul class="flash-list">
+          {% for category, message in messages %}
+            <li class="flash {{ category }}">{{ message|e }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    <!-- Title status -->
+    <section class="card">
+      <h2>Title Status</h2>
+      <div class="status-grid">
+        {% for title in titles %}
+          {% set tclass = title.name|lower|replace(' ', '-') %}
+          <div class="title-card title-{{ tclass }}">
+            <h3>
+              <img src="{{ (title.icon or title.icon_url or url_for('static', filename='icons/guardian_harmony.png'))|e }}" width="24" height="24" alt="{{ title.name|e }} icon">
+              {{ title.name|e }}
+            </h3>
+            <p><strong>Holder:</strong> {{ title.holder|e }}</p>
+            <p><strong>Expires:</strong> {{ (title.expires_in or title.expires)|e }}</p>
+            {% if title.held_for %}
+              <p><strong>Held:</strong> {{ title.held_for|e }}</p>
+            {% endif %}
+            {% if title.buffs %}
+              <div class="title-effects">Effects: {{ title.buffs|e }}</div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <!-- Reservation form -->
+    <section class="card">
+      <h2>Reserve a {{ shift_hours|default(12) }}-hour Slot</h2>
+      <p class="muted" style="font-size:.95rem;margin-top:.25rem;">
+        All times are in UTC. Reach the <strong>Guardian of Harmony</strong> if you have questions.
+        For coordinates, please provide in the following format: <code>100:200</code>.
+      </p>
+      <form action="{{ url_for('book_slot') }}" method="POST" novalidate>
+        {% set time_options = hours if hours is defined else (slots if slots is defined else []) %}
+        <div class="form-grid">
+          <div>
+            <label for="title">Title</label>
+            <select id="title" name="title" required>
+              <option value="" disabled selected>Select a Title...</option>
+              {% for t in requestable_titles %}
+                <option value="{{ t|e }}">{{ t|e }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="ign">In-Game Name</label>
+            <input id="ign" type="text" name="ign" placeholder="In-Game Name" required />
+          </div>
+          <div>
+            <label for="coords">Coordinates (X:Y)</label>
+            <input id="coords" type="text" name="coords" placeholder="123:456" pattern="^\s*\d+\s*:\s*\d+\s*$" required />
+          </div>
+          <div>
+            <label for="date">Date (UTC)</label>
+            <input id="date" type="date" name="date" value="{{ today|e }}" required />
+          </div>
+          <div>
+            <label for="time">Time (UTC)</label>
+            <select id="time" name="time" required>
+              {% for hh in time_options %}
+                <option value="{{ hh|e }}">{{ hh|e }} UTC</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label aria-hidden="true" style="visibility:hidden">Submit</label>
+            <button type="submit">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <span>Reserve Slot</span>
+            </button>
+          </div>
         </div>
+      </form>
+    </section>
 
-        <div class="form-card">
-            <h2>Reserve a {{ (config.shift_hours or 3) if config else 3 }}-hour Slot</h2>
-            <div class="utc-note">All times are in <strong>UTC</strong>. The grid below updates immediately when reserved.</div>
-            <form action="{{ url_for('book_slot') }}" method="POST">
-                <select name="title" required aria-label="Title">
-                    {% for t in requestable_titles %}
-                    <option value="{{ t }}">{{ t }}</option>
-                    {% endfor %}
-                </select>
-                <input type="text" name="ign" placeholder="In-Game Name" required aria-label="In-Game Name">
-                <input type="text" name="coords" placeholder="X:Y Coordinates" required aria-label="Coordinates">
-                <input type="date" name="date" value="{{ today }}" required aria-label="Date">
-                <select name="time" required aria-label="Start time (UTC)">
-                    {% for hour in hours %}
-                    <option value="{{ hour }}">{{ hour }}</option>
-                    {% endfor %}
-                </select>
-                <button type="submit">Submit</button>
-            </form>
-        </div>
+    <!-- Time Guide -->
+    <section class="card">
+      <h2>Time Guide</h2>
+      <p class="muted" style="font-size:.95rem;margin-top:.25rem;">Quick reference for common regions. All scheduling is in UTC.</p>
+      <table class="timezone-table" id="tz-table">
+        <thead>
+          <tr><th>Region</th><th>Timezone</th><th>00:00 UTC</th><th>12:00 UTC</th></tr>
+        </thead>
+        <tbody><!-- filled by JS --></tbody>
+      </table>
+    </section>
 
-        <div class="schedule-card">
-            <h2>Upcoming Week Schedule</h2>
-            {% with messages = get_flashed_messages() %}
-              {% if messages %}
-                <ul>
-                  {% for m in messages %}
-                    <li class="small">{{ m }}</li>
+    <!-- Upcoming Reservations -->
+    <section class="card">
+      <h2>Upcoming Reservations (Next {{ days|length }})</h2>
+
+      <div class="filter-row">
+        <label for="filter-title">Filter by title:</label>
+        <select id="filter-title">
+          <option value="">All titles</option>
+          {% for t in titles %}
+            <option value="{{ t.name|e }}">{{ t.name|e }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="schedule-grid" id="schedule-grid">
+        {% for d in days %}
+          <div class="schedule-day">
+            <h3>{{ d.strftime('%A, %b %d') }}</h3>
+            {% set dkey = d.isoformat() %}
+            {% set times = schedule_lookup.get(dkey, {}) %}
+            {% if times %}
+              {% for hhmm, titles_at_time in times.items()|sort %}
+                <div class="schedule-slot">
+                  <p class="slot-time">{{ hhmm }} UTC</p>
+                  {% for title, entry in titles_at_time.items() %}
+                    {% set tlower = title|lower %}
+                    {% set tclass = 'res-harmony' if 'harmony' in tlower else 'res-fire' if 'fire' in tlower else 'res-water' if 'water' in tlower else 'res-earth' if 'earth' in tlower else 'res-air' if 'air' in tlower else '' %}
+                    <div class="reservation-card {{ tclass }}" data-title="{{ title|e }}">
+                      <p><strong>{{ title|e }}</strong></p>
+                      <p class="muted">
+                        {{ entry.get('ign')|e }}{% if entry.get('coords') %} at {{ entry.get('coords')|e }}{% endif %}
+                      </p>
+                    </div>
                   {% endfor %}
-                </ul>
-              {% endif %}
-            {% endwith %}
-            <div class="utc-note">Cells show <em>reservations</em> immediately (Reserved = taken) and assignments when active.</div>
-            <table role="grid" aria-label="Upcoming schedule">
-                <thead>
-                    <tr>
-                        <th scope="col">Time (UTC)</th>
-                        {% for day in days %}
-                        <th scope="col">{{ day.strftime('%A') }}<br>{{ day.strftime('%Y-%m-%d') }}</th>
-                        {% endfor %}
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for hour in hours %}
-                    <tr>
-                        <th scope="row">{{ hour }}</th>
-                        {% for day in days %}
-                        <td>
-                            {% set slot_time = day.strftime('%Y-%m-%d') ~ 'T' ~ hour ~ ':00' %}
-                            {% for title_name, schedule_data in schedules.items() %}
-                                {% set reservation = schedule_data.get(slot_time) %}
-                                {% if reservation %}
-                                    <div class="cell-booking">
-                                        <strong>{{ title_name }}</strong>
-                                        <span class="badge">Reserved</span><br>
-                                        {{ reservation.ign if reservation is mapping else reservation }}
-                                        {% if reservation is mapping and reservation.coords %}
-                                            <br><span class="small">({{ reservation.coords }})</span>
-                                        {% endif %}
-                                    </div>
-                                {% endif %}
-                            {% endfor %}
-                        </td>
-                        {% endfor %}
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
+                </div>
+              {% endfor %}
+            {% else %}
+              <p class="muted no-reservations-msg">No reservations for this day.</p>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </section>
 
-        <div class="footer-links">
-          <a href="{{ url_for('view_log') }}">View Full Request Log</a> ·
-          <a href="{{ url_for('admin_login_form') }}">Admin Dashboard</a>
-        </div>
-    </div>
+    <!-- Footer -->
+    <footer class="footer-links">
+      <a href="{{ url_for('view_log') }}">View Full Request Log</a> &middot;
+      <a href="{{ url_for('admin.login') }}">Admin Dashboard</a>
+      <p>This is an unofficial tool for the Server 1041 Avatar: Realms Collide community.</p>
+    </footer>
+  </div>
+
+  <!-- Time Guide + Title Filter JS -->
+  <script>
+  (function() {
+    const ZONES = [
+      { label: "Los Angeles (PT)", tz: "America/Los_Angeles" },
+      { label: "Denver (MT)", tz: "America/Denver" },
+      { label: "Chicago (CT)", tz: "America/Chicago" },
+      { label: "New York (ET)", tz: "America/New_York" },
+      { label: "Mexico City", tz: "America/Mexico_City" },
+      { label: "Buenos Aires", tz: "America/Argentina/Buenos_Aires" },
+      { label: "London (UK)", tz: "Europe/London" },
+      { label: "Berlin (Germany)", tz: "Europe/Berlin" },
+      { label: "Tokyo (Japan)", tz: "Asia/Tokyo" },
+      { label: "Sydney (Australia)", tz: "Australia/Sydney" }
+    ];
+
+    try {
+      const userTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (userTz && !ZONES.some(z => z.tz === userTz)) {
+        ZONES.unshift({ label: "Your Timezone ✨", tz: userTz, isLocal: true });
+      }
+    } catch { /* no-op */ }
+
+    function formatLocalTime(dtUTC, targetTZ) {
+      const dayUTC = dtUTC.getUTCDate();
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: targetTZ, hour: '2-digit', minute: '2-digit', day: 'numeric', hour12: false
+      }).formatToParts(dtUTC);
+      const hh = parts.find(p => p.type === 'hour')?.value ?? '00';
+      const mm = parts.find(p => p.type === 'minute')?.value ?? '00';
+      const localDay = parseInt(parts.find(p => p.type === 'day')?.value ?? '0', 10);
+      let badge = '';
+      if (!Number.isNaN(localDay) && localDay !== dayUTC) {
+        badge = `<span class="tz-dayflag">${localDay > dayUTC ? 'Next Day' : 'Prev. Day'}</span>`;
+      }
+      return `<strong>${hh}:${mm}</strong> ${badge}`;
+    }
+
+    function fillTimeGuide() {
+      const tbody = document.querySelector('#tz-table tbody');
+      if (!tbody) return;
+      const now = new Date();
+      const midnightUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+      const noonUTC     = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12, 0, 0));
+      tbody.innerHTML = ZONES.map(z => {
+        const t00 = formatLocalTime(midnightUTC, z.tz);
+        const t12 = formatLocalTime(noonUTC, z.tz);
+        const tzName = z.tz.split('/').pop().replace(/_/g, ' ');
+        return `<tr class="${z.isLocal ? 'user-local-time' : ''}">
+                  <td>${z.label}</td><td>${tzName}</td><td>${t00}</td><td>${t12}</td>
+                </tr>`;
+      }).join('');
+    }
+    fillTimeGuide();
+
+    // Title filter
+    const filterSelect = document.getElementById('filter-title');
+    const scheduleGrid = document.getElementById('schedule-grid');
+
+    function applyFilter() {
+      if (!filterSelect || !scheduleGrid) return;
+      const selected = filterSelect.value;
+      const days = scheduleGrid.querySelectorAll('.schedule-day');
+
+      days.forEach(day => {
+        const slots = day.querySelectorAll('.schedule-slot');
+        let dayHasAny = false;
+
+        slots.forEach(slot => {
+          const cards = slot.querySelectorAll('.reservation-card');
+          let slotHasAny = false;
+
+          cards.forEach(card => {
+            const show = !selected || card.dataset.title === selected;
+            card.style.display = show ? '' : 'none';
+            if (show) slotHasAny = true;
+          });
+
+          slot.style.display = slotHasAny ? '' : 'none';
+          if (slotHasAny) dayHasAny = true;
+        });
+
+        const noMsg = day.querySelector('.no-reservations-msg');
+        if (noMsg) noMsg.style.display = dayHasAny ? 'none' : 'block';
+      });
+    }
+
+    if (filterSelect && scheduleGrid) {
+      filterSelect.addEventListener('change', applyFilter);
+      setTimeout(applyFilter, 0);
+    }
+  })();
+  </script>
 </body>
 </html>

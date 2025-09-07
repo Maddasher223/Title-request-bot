@@ -1,0 +1,272 @@
+<!-- templates/admin/servers.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Admin • Servers</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --bg:#121417; --card:#1d2024; --alt:#0f1114; --border:#3e444c;
+      --text:#c4c9d4; --muted:#8e9297; --bright:#fff;
+      --primary:#c39a3f; --primary-hover:#af8b39; --ring:rgba(195,154,63,.25);
+      --danger:#f04747; --danger-hover:#d83c3e; --success:#43b581;
+      --shadow:0 10px 40px rgba(0,0,0,.5); /* restored so mobile menu’s shadow works */
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%}
+    body{background:var(--bg);color:var(--text);font:16px/1.55 'Inter',system-ui,sans-serif;padding:24px}
+    .container{max-width:1120px;margin:0 auto;display:grid;gap:24px}
+    .grid{display:grid;gap:24px} /* define the class used on <main> */
+    header.header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:12px}
+    h1{margin:0;font:700 1.8rem 'Cinzel',serif;color:var(--bright)}
+    nav a{color:var(--primary);text-decoration:none;font-weight:700}
+
+    .flash{padding:12px 14px;border-radius:10px;border:1px solid var(--primary);background:rgba(195,154,63,.12);color:var(--primary);font-weight:700}
+    .flash.error{border-color:var(--danger);background:rgba(240,71,71,.12);color:#fff}
+
+    .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;border-top:3px solid var(--primary)}
+    .card h2{margin:0 0 .6rem;font:700 1.2rem 'Cinzel',serif;color:var(--bright)}
+    .muted{color:var(--muted);font-size:0.9rem;}
+
+    label{display:block;font-weight:600;margin-bottom:6px}
+    input[type="text"], input[type="url"]{width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:#0f1114;color:var(--bright)}
+    input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 4px var(--ring)}
+
+    .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:1rem;}
+    .checkbox-group{display:flex;align-items:center;gap:10px;padding:12px;background:var(--alt);border-radius:10px;margin-top:1.5rem;}
+
+    .actions{display:flex;gap:8px;align-items:center;justify-content:flex-end;}
+    button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 14px;border-radius:10px;border:0;background:var(--primary);color:#0a0b0d;font-weight:800;text-decoration:none;cursor:pointer;font-family:'Cinzel',serif}
+    button:hover,.btn:hover{background:var(--primary-hover)}
+    .btn-danger{background:var(--danger);color:#fff} .btn-danger:hover{background:var(--danger-hover)}
+    .btn-secondary{background:var(--alt);color:var(--bright);border:1px solid var(--border)} .btn-secondary:hover{border-color:var(--primary);background:var(--card)}
+
+    .table-wrapper{overflow-x:auto;}
+    table{width:100%;border-collapse:collapse;margin-top:1.5rem}
+    th,td{padding:12px 14px;border-bottom:1px solid var(--border);text-align:left;vertical-align:middle;white-space:nowrap;}
+    th{color:var(--muted);font:700 .8rem 'Cinzel',serif;letter-spacing:.03em;text-transform:uppercase}
+    tbody tr:nth-of-type(odd){background-color:var(--alt);}
+    code{background:var(--alt);padding:3px 6px;border-radius:8px;border:1px solid var(--border)}
+    .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:rgba(67,181,129,.15);color:var(--success);font-weight:700;font-size:.8rem}
+    .badge svg{width:1em;height:1em;}
+
+    details > summary {list-style: none; cursor:pointer; color:var(--primary); font-weight:700;}
+    details > summary::-webkit-details-marker {display: none;}
+    details .webhook-code {margin-top:8px; max-width: 300px; overflow-wrap: break-word; white-space: normal;}
+
+    .action-menu { position: relative; }
+    .action-menu-content { display: none; position: absolute; right: 0; top: 110%; background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 5px 20px rgba(0,0,0,.3); z-index: 10; padding: 6px; min-width: 180px; }
+    .action-menu-content.is-open { display: block; }
+    .action-menu-content a, .action-menu-content button { background: none; color: var(--text); width: 100%; text-align: left; padding: 8px 12px; font-family: 'Inter', sans-serif; font-weight: 600; font-size: 0.9rem; }
+    .action-menu-content a:hover, .action-menu-content button:hover { background: var(--alt); color: var(--bright); }
+    .action-menu-content form button { color: var(--danger); }
+
+    /* Mobile Navigation */
+    .nav { display: flex; gap: 12px; }
+    .menu-toggle { display: none; }
+    @media (max-width: 992px) {
+      .header { flex-wrap: wrap; gap: 1rem; }
+      .nav-links { display: none; position: absolute; top: 85px; right: 24px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 12px; flex-direction: column; gap: 0; z-index: 100; }
+      .nav-links.is-open { display: flex; }
+      .nav-links a { padding: 12px 16px; border-radius: 8px; width: 200px; }
+      .nav-links a:hover { background: var(--alt); text-decoration: none; }
+      .menu-toggle { display: block; background: none; border: none; padding: 8px; cursor: pointer; color: var(--muted); }
+      .menu-toggle:hover { color: var(--bright); }
+      .menu-toggle svg { width: 28px; height: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>Server Management</h1>
+      <nav class="nav" aria-label="Admin navigation">
+        <div class="nav-links" id="nav-links">
+          <a href="{{ url_for('admin.dashboard') }}">Dashboard</a>
+          <a href="{{ url_for('admin.ops') }}">Operations</a>
+          <a href="{{ url_for('admin.titles_page') }}">Titles</a>
+          <a href="{{ url_for('admin.reservations_page') }}">Reservations</a>
+          <a href="{{ url_for('admin.servers_page') }}" aria-current="page">Servers</a>
+          <a href="{{ url_for('admin.logout') }}">Logout</a>
+        </div>
+        <button class="menu-toggle" id="menu-toggle" aria-label="Open navigation menu" aria-expanded="false" aria-controls="nav-links">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
+        </button>
+      </nav>
+    </header>
+
+    {% for category, message in get_flashed_messages(with_categories=True) %}
+      <div class="flash {{ category }}" role="alert">{{ message|e }}</div>
+    {% endfor %}
+
+    <main class="grid">
+      <section class="card" aria-labelledby="add-title">
+        <h2 id="add-title">Add a New Discord Server</h2>
+        <p class="muted">
+          Connect a new server to the dashboard. To find the required IDs, enable <em>Developer Mode</em> in Discord
+          (User Settings → Advanced). Exactly one server can be the default.
+        </p>
+        <form action="{{ url_for('admin.servers_page') }}" method="POST" novalidate>
+          <input type="hidden" name="action" value="create" />
+          <div class="form-grid">
+            <div>
+              <label for="guild_id">Server (Guild) ID</label>
+              <input id="guild_id" name="guild_id" type="text" placeholder="e.g. 123456789012345678" required />
+            </div>
+            <div>
+              <label for="webhook_url">Notification Webhook URL</label>
+              <input id="webhook_url" name="webhook_url" type="url" placeholder="https://discord.com/api/webhooks/..." required />
+            </div>
+            <div>
+              <label for="guardian_role_id">Guardian Role ID (Optional)</label>
+              <input id="guardian_role_id" name="guardian_role_id" type="text" placeholder="The role to @mention in notifications" />
+            </div>
+          </div>
+          <div class="checkbox-group">
+            <input id="is_default" name="is_default" type="checkbox" value="1" style="width:auto;height:auto;" />
+            <label for="is_default" style="margin:0; font-weight:normal;">Set this as the default server for bot commands</label>
+          </div>
+          <div style="margin-top:1.5rem; display:flex; gap:12px;">
+            <button type="submit">Add Server</button>
+            <a class="btn btn-secondary" href="{{ url_for('admin.servers_page') }}">Reset Form</a>
+          </div>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="list-title">
+        <h2 id="list-title">Configured Servers</h2>
+        {% if servers %}
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr><th>Server (Guild ID)</th><th>Webhook URL</th><th>Guardian Role</th><th>Status</th><th style="text-align:right;">Actions</th></tr>
+              </thead>
+              <tbody>
+                {% for s in servers %}
+                  <tr>
+                    <td><code>{{ s.guild_id }}</code></td>
+                    <td>
+                      <details>
+                        <summary>Show</summary>
+                        <div class="webhook-code"><code>{{ s.webhook_url|e }}</code></div>
+                      </details>
+                    </td>
+                    <td><code>{{ s.guardian_role_id or '-' }}</code></td>
+                    <td>
+                      {% if s.is_default %}
+                        <span class="badge">
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.563.563 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" /></svg>
+                          Default
+                        </span>
+                      {% else %}
+                        <form action="{{ url_for('admin.servers_page') }}" method="POST">
+                          <input type="hidden" name="action" value="set_default" />
+                          <input type="hidden" name="guild_id" value="{{ s.guild_id }}" />
+                          <button type="submit" class="btn-secondary" style="padding: 6px 10px; font-size:0.9rem;">Make Default</button>
+                        </form>
+                      {% endif %}
+                    </td>
+                    <td class="actions">
+                      <div class="action-menu">
+                        <button class="btn btn-secondary" onclick="toggleMenu(this)">Actions ▾</button>
+                        <div class="action-menu-content">
+                          <a href="#edit-{{ loop.index }}" onclick="openEditForm('{{ loop.index }}')">Edit</a>
+                          <form action="{{ url_for('admin.servers_page') }}" method="POST">
+                            <input type="hidden" name="action" value="test_webhook" />
+                            <input type="hidden" name="guild_id" value="{{ s.guild_id }}" />
+                            <button type="submit">Test Webhook</button>
+                          </form>
+                          <form action="{{ url_for('admin.servers_page') }}" method="POST" onsubmit="return confirm('Delete server {{ s.guild_id }}? This cannot be undone.');">
+                            <input type="hidden" name="action" value="delete" />
+                            <input type="hidden" name="guild_id" value="{{ s.guild_id }}" />
+                            <button type="submit">Delete</button>
+                          </form>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="edit-row" id="edit-{{ loop.index }}" style="display:none;">
+                    <td colspan="5" style="padding:0;">
+                      <div style="padding: 24px; background: var(--alt);">
+                        <details open>
+                          <summary style="font-size:1.1rem; margin-bottom:1rem;">Editing Server <code>{{ s.guild_id }}</code></summary>
+                          <form class="form-grid" action="{{ url_for('admin.servers_page') }}" method="POST" novalidate>
+                            <input type="hidden" name="action" value="update" />
+                            <input type="hidden" name="guild_id" value="{{ s.guild_id }}" />
+                            <div>
+                              <label for="webhook_url_{{ loop.index }}">Webhook URL</label>
+                              <input id="webhook_url_{{ loop.index }}" name="webhook_url" type="url" value="{{ s.webhook_url }}" required />
+                            </div>
+                            <div>
+                              <label for="guardian_role_id_{{ loop.index }}">Guardian Role ID</label>
+                              <input id="guardian_role_id_{{ loop.index }}" name="guardian_role_id" type="text" value="{{ s.guardian_role_id or '' }}" />
+                            </div>
+                            <div class="checkbox-group" style="margin-top:0;">
+                              <input id="is_default_{{ loop.index }}" name="is_default" type="checkbox" value="1" {% if s.is_default %}checked{% endif %} style="width:auto;height:auto;" />
+                              <label for="is_default_{{ loop.index }}" style="margin:0; font-weight:normal;">Set as default</label>
+                            </div>
+                            <div style="align-self:end;">
+                              <button type="submit">Save Changes</button>
+                              <a class="btn btn-secondary" href="{{ url_for('admin.servers_page') }}">Cancel</a>
+                            </div>
+                          </form>
+                        </details>
+                      </div>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="muted" style="text-align:center; padding: 2rem 0;">No servers have been configured yet. Add one using the form above to get started.</p>
+        {% endif %}
+      </section>
+    </main>
+  </div>
+
+  <script>
+    // Mobile navigation menu
+    document.addEventListener('DOMContentLoaded', function () {
+      const menuToggle = document.getElementById('menu-toggle');
+      const navLinks = document.getElementById('nav-links');
+      if (menuToggle && navLinks) {
+        menuToggle.addEventListener('click', function () {
+          const expanded = this.getAttribute('aria-expanded') === 'true';
+          this.setAttribute('aria-expanded', String(!expanded));
+          navLinks.classList.toggle('is-open');
+        });
+      }
+    });
+
+    // Action menus and edit forms
+    function toggleMenu(button) {
+      const menu = button.nextElementSibling;
+      menu.classList.toggle('is-open');
+    }
+
+    function openEditForm(index) {
+      // Hide other edit rows
+      document.querySelectorAll('.edit-row').forEach(row => row.style.display = 'none');
+      const editRow = document.getElementById(`edit-${index}`);
+      if (editRow) {
+        editRow.style.display = 'table-row';
+        editRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+
+    // Close menus when clicking outside
+    document.addEventListener('click', function(event) {
+      document.querySelectorAll('.action-menu-content.is-open').forEach(menu => {
+        if (!menu.parentElement.contains(event.target)) {
+          menu.classList.remove('is-open');
+        }
+      });
+    });
+  </script>
+</body>
+</html>

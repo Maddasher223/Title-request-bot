@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Reservation Cancelled</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; background:#121417; color:#e8eaed }
+    .card { max-width: 640px; margin: 0 auto; background:#1d2024; border:1px solid #3e444c; border-radius:12px; padding:20px }
+    a { color:#e8b351; text-decoration:none; font-weight:700 }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Reservation Cancelled</h1>
+    <p>The reservation for <strong>{{ title_name }}</strong> ({{ ign }}) has been cancelled.</p>
+    <p><a href="{{ url_for('dashboard') }}">Return to dashboard</a></p>
+  </div>
+</body>
+</html>

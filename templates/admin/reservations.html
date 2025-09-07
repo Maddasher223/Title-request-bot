@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Admin • Reservations</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --bg:#121417; --card:#1d2024; --alt:#0f1114; --border:#3e444c;
+      --text:#c4c9d4; --muted:#8e9297; --bright:#fff;
+      --primary:#c39a3f; --primary-hover:#af8b39; --ring:rgba(195,154,63,.25);
+      --danger:#f04747; --danger-hover:#d83c3e; --success:#43b581; --shadow:0 10px 40px rgba(0,0,0,.5);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 'Inter',system-ui,sans-serif;padding:24px}
+    .container{max-width:1200px;margin:0 auto;display:grid;gap:18px}
+
+    h1{margin:0;font:700 1.8rem 'Cinzel',serif;color:var(--bright)}
+    a{color:var(--primary);text-decoration:none;font-weight:700}
+    a:hover{text-decoration:underline}
+
+    .header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:12px}
+
+    .flash{padding:12px 14px;border-radius:10px;border:1px solid var(--primary); background:rgba(195,154,63,.12);color:var(--primary);font-weight:700}
+    .flash.error{border-color:var(--danger);background:rgba(240,71,71,.12);color:#fff}
+    .flash.success{border-color:var(--success);background:rgba(67,181,129,.12);color:#0e1a0f}
+
+    .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;box-shadow:var(--shadow);border-top:3px solid var(--primary)}
+
+    button, .btn { padding:10px 14px; border:0; border-radius:10px; background:var(--primary); color:#0a0b0d; font-weight:800; cursor:pointer; font-family:'Cinzel',serif; display:inline-flex; align-items:center; justify-content:center; gap:8px; text-decoration:none; }
+    button:hover, .btn:hover { background:var(--primary-hover); }
+    .btn-small{ padding:8px 10px; font-size: 0.9rem; }
+    .btn-danger { background-color: var(--danger); color: #fff; }
+    .btn-danger:hover { background-color: var(--danger-hover); }
+    .btn-secondary { background: var(--alt); border: 1px solid var(--border); color: var(--text); }
+    .btn-secondary:hover { border-color: var(--primary); color: var(--bright); }
+
+    .card-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+    .search-form { display: flex; gap: 8px; flex-grow: 1; min-width: 280px; }
+    .search-form input { flex-grow: 1; min-width: 200px; padding:10px 12px; border-radius:10px; border:1px solid var(--border); background:var(--alt); color:var(--bright); }
+    .search-form input:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 4px var(--ring); }
+
+    .toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:10px 0 6px}
+    .muted{color:var(--muted)}
+
+    .table-wrapper { overflow-x: auto; }
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:12px 14px;border-bottom:1px solid var(--border);text-align:left; white-space:nowrap;}
+    th{color:var(--muted);font:700 .85rem 'Cinzel',serif;letter-spacing:.03em;text-transform:uppercase}
+    tbody tr:nth-of-type(odd) { background-color: var(--alt); }
+    code{background:var(--alt);padding:3px 6px;border-radius:8px;border:1px solid var(--border)}
+
+    .pagination{display:flex;gap:6px;align-items:center;justify-content:center;margin-top:20px;flex-wrap:wrap}
+    .pagination a,.pagination span{padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--alt);color:var(--bright);text-decoration:none}
+    .pagination .active{border-color:var(--primary);background:var(--primary);color:var(--bg);box-shadow:0 0 0 3px var(--ring)}
+    .pagination .disabled{color:var(--muted); background: transparent;}
+
+    .nav { display: flex; gap: 12px; }
+    .menu-toggle { display: none; }
+    @media (max-width: 992px) {
+      .nav-links { display: none; position: absolute; top: 85px; right: 24px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 12px; flex-direction: column; gap: 0; z-index: 100; }
+      .nav-links.is-open { display: flex; }
+      .nav-links a { padding: 12px 16px; border-radius: 8px; width: 200px; }
+      .nav-links a:hover { background: var(--alt); text-decoration: none; }
+      .menu-toggle { display: block; background: none; border: none; padding: 8px; cursor: pointer; color: var(--muted); }
+      .menu-toggle:hover { color: var(--bright); }
+      .menu-toggle svg { width: 28px; height: 28px; }
+    }
+
+    /* Confirmation Modal */
+    .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; opacity: 0; visibility: hidden; transition: all .3s; }
+    .modal-overlay.is-visible { opacity: 1; visibility: visible; }
+    .modal-dialog { background: var(--card); border-radius: 14px; padding: 24px; border-top: 3px solid var(--danger); max-width: 450px; width: 90%; transform: translateY(20px); transition: all .3s; }
+    .modal-overlay.is-visible .modal-dialog { transform: translateY(0); }
+    .modal-dialog h3 { margin: 0 0 10px; font-family: 'Cinzel', serif; color: var(--bright); }
+    .modal-dialog p { margin: 0; }
+    .modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Reservations</h1>
+      <nav class="nav" aria-label="Admin navigation">
+        <div class="nav-links" id="nav-links">
+          <a href="{{ url_for('admin.dashboard') }}">Dashboard</a>
+          <a href="{{ url_for('admin.titles_page') }}">Titles</a>
+          <a href="{{ url_for('admin.servers_page') }}">Servers</a>
+          <a href="{{ url_for('admin.logout') }}">Logout</a>
+        </div>
+        <button class="menu-toggle" id="menu-toggle" aria-label="Open navigation menu" aria-expanded="false" aria-controls="nav-links">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
+        </button>
+      </nav>
+    </div>
+
+    {% for category, message in get_flashed_messages(with_categories=True) %}
+      <div class="flash {{ category }}">{{ message }}</div>
+    {% endfor %}
+
+    <div class="card">
+      <div class="card-header">
+        <form class="search-form" method="GET" action="{{ url_for('admin.reservations_page') }}">
+          <input type="text" name="q" value="{{ q }}" placeholder="Search by title, IGN, or coords…" />
+          <button type="submit" aria-label="Search">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:1.2em;height:1.2em;">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+            </svg>
+          </button>
+        </form>
+        <a class="btn btn-secondary" href="{% if q %}{{ url_for('admin.reservations_export', q=q) }}{% else %}{{ url_for('admin.reservations_export') }}{% endif %}">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width:1.2em;height:1.2em;">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+          </svg>
+          <span>Export CSV</span>
+        </a>
+      </div>
+
+      <div class="toolbar">
+        <p class="muted">Showing {{ rows|length }} of {{ total }} result{{ '' if total==1 else 's' }}.</p>
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>IGN</th>
+              <th>Coords</th>
+              <th>Slot (UTC)</th>
+              <th style="text-align:right;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in rows %}
+              {% set date_str = None %}
+              {% set time_str = None %}
+              {% if r.slot_dt %}
+                {% set date_str = r.slot_dt.strftime('%Y-%m-%d') %}
+                {% set time_str = r.slot_dt.strftime('%H:%M') %}
+              {% elif r.slot_ts and 'T' in r.slot_ts %}
+                {% set parts = r.slot_ts.split('T') %}
+                {% set date_str = parts[0] %}
+                {% set time_str = parts[1][:5] %}
+              {% endif %}
+              <tr>
+                <td><strong>{{ r.title_name }}</strong></td>
+                <td>{{ r.ign }}</td>
+                <td><code>{{ r.coords or '-' }}</code></td>
+                <td>
+                  {% if date_str and time_str %}
+                    {{ date_str }} {{ time_str }}
+                  {% else %}
+                    {{ r.slot_dt.strftime('%Y-%m-%d %H:%M') if r.slot_dt else (r.slot_ts or '') }}
+                  {% endif %}
+                </td>
+                <td style="text-align:right;">
+                  {% if date_str and time_str %}
+                    <button type="button"
+                            class="btn-small btn-danger"
+                            data-title="{{ r.title_name }}"
+                            data-ign="{{ r.ign }}"
+                            data-date="{{ date_str }}"
+                            data-time="{{ time_str }}"
+                            onclick="openCancelModal(this)">
+                      Cancel
+                    </button>
+                  {% else %}
+                    <button type="button" class="btn-small btn-danger" disabled title="Cannot cancel: missing slot time">
+                      Cancel
+                    </button>
+                  {% endif %}
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="5" style="text-align:center; padding: 24px;" class="muted">No reservations found.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% if pages > 1 %}
+        <div class="pagination">
+          {% set prev = page - 1 %}{% set nextp = page + 1 %}
+          {% if page > 1 %}
+            <a href="{{ url_for('admin.reservations_page', q=q, page=1) }}">« First</a>
+            <a href="{{ url_for('admin.reservations_page', q=q, page=prev) }}">‹ Prev</a>
+          {% else %}
+            <span class="disabled">« First</span><span class="disabled">‹ Prev</span>
+          {% endif %}
+
+          <span class="active">Page {{ page }} / {{ pages }}</span>
+
+          {% if page < pages %}
+            <a href="{{ url_for('admin.reservations_page', q=q, page=nextp) }}">Next ›</a>
+            <a href="{{ url_for('admin.reservations_page', q=q, page=pages) }}">Last »</a>
+          {% else %}
+            <span class="disabled">Next ›</span><span class="disabled">Last »</span>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="cancel-modal" onclick="closeCancelModal()">
+    <div class="modal-dialog" onclick="event.stopPropagation()">
+      <h3>Confirm Cancellation</h3>
+      <p id="modal-text">Are you sure you want to cancel this reservation?</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-secondary" onclick="closeCancelModal()">Go Back</button>
+        <form id="modal-form" action="{{ url_for('admin.release_reservation') }}" method="POST">
+          <input type="hidden" name="title" id="modal-title">
+          <input type="hidden" name="date" id="modal-date">
+          <input type="hidden" name="time" id="modal-time">
+          <button type="submit" class="btn btn-danger">Yes, Cancel</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Mobile nav
+    document.addEventListener('DOMContentLoaded', function () {
+      const menuToggle = document.getElementById('menu-toggle');
+      const navLinks = document.getElementById('nav-links');
+      if (menuToggle && navLinks) {
+        menuToggle.addEventListener('click', function () {
+          const isExpanded = this.getAttribute('aria-expanded') === 'true';
+          this.setAttribute('aria-expanded', (!isExpanded).toString());
+          navLinks.classList.toggle('is-open');
+        });
+      }
+    });
+
+    // Modal
+    const cancelModal = document.getElementById('cancel-modal');
+    const modalText = document.getElementById('modal-text');
+    const modalTitle = document.getElementById('modal-title');
+    const modalDate = document.getElementById('modal-date');
+    const modalTime = document.getElementById('modal-time');
+
+    function openCancelModal(button) {
+      const title = button.dataset.title;
+      const ign = button.dataset.ign;
+      const date = button.dataset.date;
+      const time = button.dataset.time;
+
+      modalText.innerHTML = `Are you sure you want to cancel the reservation for <strong>${ign}</strong>?<br><small>${title} at ${date} ${time} UTC</small>`;
+      modalTitle.value = title;
+      modalDate.value = date;
+      modalTime.value = time;
+
+      cancelModal.classList.add('is-visible');
+    }
+
+    function closeCancelModal() {
+      cancelModal.classList.remove('is-visible');
+    }
+  </script>
+</body>
+</html>

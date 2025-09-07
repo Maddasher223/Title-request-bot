@@ -1,0 +1,12 @@
+services:
+  - type: worker
+    name: arc-titles-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+  - type: web
+    name: arc-titles-web
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn web_routes:app --bind 0.0.0.0:$PORT
+    plan: free
