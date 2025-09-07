@@ -14,7 +14,7 @@ def register_routes(app, deps):
       parse_iso_utc, now_utc, iso_slot_key_naive, title_is_vacant_now,
       get_shift_hours, bot,
       # optional
-      db_helpers (dict with set_shift_hours, etc.),
+      db_helpers (dict with set_shift_hours, compute_slots, requestable_title_names, title_status_cards, schedule_lookup),
       send_to_log_channel (async func), schedule_lookup (optional)
     """
     # ----- Unpack deps (robustly) -----
@@ -37,13 +37,19 @@ def register_routes(app, deps):
     get_shift_hours = deps['get_shift_hours']
 
     bot            = deps.get('bot')
-    db_helpers     = deps.get('db_helpers', {})
+    db_helpers     = deps.get('db_helpers', {}) or {}
     # Optional helpers (no-ops if absent)
     set_shift_hours = deps.get('set_shift_hours') or db_helpers.get('set_shift_hours') or (lambda *_: None)
     schedule_lookup = deps.get('schedule_lookup')  # may be None
+
     # Helpers from DB (with safe fallbacks)
-    compute_slots = db_helpers.get('compute_slots') or (lambda sh: [f"{h:02d}:00" for h in range(0, 24, max(1, int(sh) if int(sh) > 0 and 24 % int(sh) == 0 else 12))])
-    requestable_title_names = db_helpers.get('requestable_title_names') or (lambda: sorted([t for t in ORDERED_TITLES if t != "Guardian of Harmony"]))
+    compute_slots = db_helpers.get('compute_slots') or (
+        lambda sh: [f"{h:02d}:00" for h in range(0, 24, max(1, int(sh) if str(sh).isdigit() and int(sh) > 0 and 24 % int(sh) == 0 else 12))]
+    )
+    requestable_title_names = db_helpers.get('requestable_title_names') or (
+        lambda: sorted([t for t in ORDERED_TITLES if t != "Guardian of Harmony"])
+    )
+    title_status_cards = db_helpers.get('title_status_cards')
 
     # Optional: async logger channel
     async def _noop_log_channel(_bot, _msg):
@@ -115,7 +121,7 @@ def register_routes(app, deps):
             return None
 
     def _compute_next_reservation_for_title(title_name: str):
-        """Return (slot_iso, ign) for the earliest future reservation for a title."""
+        """Return (slot_iso, ign) for the earliest future reservation for a title (legacy state-based)."""
         sched = state.get('schedules', {}).get(title_name, {})
         future = []
         now = now_utc()
@@ -130,7 +136,7 @@ def register_routes(app, deps):
         return dt.strftime("%Y-%m-%dT%H:%M:%S"), _reservation_to_ign(v)
 
     def _get_all_upcoming_reservations(days_ahead: int = 7):
-        """Return a list of {title, slot_iso, ign, coords} for the next N days, sorted by time."""
+        """Return a list of {title, slot_iso, ign, coords} for the next N days, sorted by time (legacy state-based)."""
         now = now_utc()
         cutoff = now + timedelta(days=days_ahead)
         items = []
@@ -176,59 +182,57 @@ def register_routes(app, deps):
     # =========================
     @app.route("/")
     def dashboard():
-        titles_data = []
-        titles_dict = state.get('titles', {})
-        for title_name in ORDERED_TITLES:
-            cat = TITLES_CATALOG.get(title_name, {})
-            data = titles_dict.get(title_name, {})
-            holder_info = "None"
-            if data.get('holder'):
-                holder = data['holder']
-                holder_info = f"{holder.get('name','?')} ({holder.get('coords','-')})"
+        # Prefer DB-driven status cards; fall back to legacy state if helper isn't wired
+        if title_status_cards:
+            titles_data = title_status_cards()
+        else:
+            titles_data = []
+            titles_dict = state.get('titles', {})
+            for title_name in ORDERED_TITLES:
+                cat = TITLES_CATALOG.get(title_name, {})
+                data = titles_dict.get(title_name, {})
+                holder_info = "None"
+                if data.get('holder'):
+                    holder = data['holder']
+                    holder_info = f"{holder.get('name','?')} ({holder.get('coords','-')})"
 
-            remaining = "—"
-            if data.get('expiry_date'):
-                try:
-                    expiry = _safe_parse_iso(data['expiry_date'])
-                    if expiry:
-                        delta = expiry - now_utc()
-                        remaining = str(timedelta(seconds=int(delta.total_seconds()))) if delta.total_seconds() > 0 else "Expired"
-                    else:
+                remaining = "—"
+                if data.get('expiry_date'):
+                    try:
+                        expiry = _safe_parse_iso(data['expiry_date'])
+                        if expiry:
+                            delta = expiry - now_utc()
+                            remaining = str(timedelta(seconds=int(delta.total_seconds()))) if delta.total_seconds() > 0 else "Expired"
+                        else:
+                            remaining = "Invalid"
+                    except Exception:
                         remaining = "Invalid"
-                except Exception:
-                    remaining = "Invalid"
 
-            next_slot_key, next_ign = _compute_next_reservation_for_title(title_name)
-            next_res_text = f"{next_slot_key} by {next_ign}" if (next_slot_key and next_ign) else "—"
+                next_slot_key, next_ign = _compute_next_reservation_for_title(title_name)
+                next_res_text = f"{next_slot_key} by {next_ign}" if (next_slot_key and next_ign) else "—"
 
-            # ICON_FILES already contains paths like "/static/icons/..png"
-            icon_path = ICON_FILES.get(title_name) or cat.get('image') or ""
-
-            titles_data.append({
-                'name': title_name,
-                'holder': holder_info,
-                'expires_in': remaining,
-                'icon': icon_path,
-                'buffs': cat.get('effects', []),
-                'next_reserved': next_res_text
-            })
+                icon_path = ICON_FILES.get(title_name) or cat.get('image') or ""
+                titles_data.append({
+                    'name': title_name,
+                    'holder': holder_info,
+                    'expires_in': remaining,
+                    'icon': icon_path,
+                    'buffs': cat.get('effects', []),
+                    'next_reserved': next_res_text
+                })
 
         today = now_utc().date()
         days = [(today + timedelta(days=i)) for i in range(7)]
 
-        # ❌ old (hard-coded):
-        # hours = ["00:00", "12:00"]
-        # requestable_titles = REQUESTABLE
-
-        # ✅ new (drives from DB setting + DB titles):
+        # Drive slots and requestable titles from DB
         shift = int(get_shift_hours())
         hours = compute_slots(shift)           # e.g., 00:00, 04:00, 08:00, 12:00, ...
-        requestable_titles = requestable_title_names()  # DB-truth, excludes unrequestable
+        requestable = requestable_title_names()  # DB-truth, excludes unrequestable
         cfg = state.get('config', {})
 
         allowed_hours = set(hours)
 
-        # { date_iso: { "HH:MM": { title_name: {"ign":..,"coords":..} } } }
+        # { date_iso: { "HH:MM": { title_name: {"ign":..,"coords":..} } } }  (legacy state-backed schedule)
         schedule_grid = {}
         for title_name, sched in state.get('schedules', {}).items():
             for k, v in sched.items():
@@ -237,11 +241,10 @@ def register_routes(app, deps):
                     continue
                 dkey = dt.date().isoformat()
                 tkey = dt.strftime("%H:%M")
-                if tkey not in allowed_hours:  # <--- add this guard
+                if tkey not in allowed_hours:
                     continue
                 day_map = schedule_grid.setdefault(dkey, {})
                 time_map = day_map.setdefault(tkey, {})
-                # Always store as dict to simplify template logic
                 if isinstance(v, dict):
                     time_map[title_name] = {"ign": v.get("ign", "-"), "coords": v.get("coords", "-")}
                 else:
@@ -254,7 +257,7 @@ def register_routes(app, deps):
             hours=hours,
             schedule_lookup=schedule_grid,
             today=today.strftime('%Y-%m-%d'),
-            requestable_titles=requestable_titles,
+            requestable_titles=requestable,
             shift_hours=get_shift_hours(),
             config=cfg
         )
@@ -284,13 +287,13 @@ def register_routes(app, deps):
             flash("Missing form data: title, IGN, date, and time are required.")
             return redirect(url_for("dashboard"))
 
-        # ✅ verify against DB-requestable titles, not the startup constant
+        # Verify against DB-requestable titles
         _req_titles = set(requestable_title_names())
         if title_name not in _req_titles:
             flash("This title cannot be requested.")
             return redirect(url_for("dashboard"))
 
-        # ✅ ensure the selected time matches the current slot grid
+        # Ensure the selected time matches the current slot grid
         _shift = int(get_shift_hours())
         _allowed = set(compute_slots(_shift))  # e.g., {"00:00","04:00","08:00","12:00","16:00","20:00"}
         if time_str not in _allowed:
@@ -320,7 +323,7 @@ def register_routes(app, deps):
             # Log
             log_action('schedule_book_web', title=title_name, time=schedule_key, ign=ign, coords=(coords or '-'))
 
-            # If current slot and vacant, grant now
+            # If current slot and vacant, grant now (legacy state path)
             hours = get_shift_hours()
             if (schedule_time <= now_utc() < schedule_time + timedelta(hours=hours)) and title_is_vacant_now(title_name):
                 end = schedule_time + timedelta(hours=hours)
@@ -403,7 +406,7 @@ def register_routes(app, deps):
         if not is_admin():
             return redirect(url_for("admin_login_form"))
 
-        # Active titles
+        # Active titles (legacy state view for the small admin page)
         active = []
         titles_dict = state.get('titles', {})
         for title_name in ORDERED_TITLES:

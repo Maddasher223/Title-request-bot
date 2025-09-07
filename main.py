@@ -15,7 +15,7 @@ from threading import Thread, RLock
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
-from contextlib import contextmanager  # <-- added
+from contextlib import contextmanager
 
 from flask import Flask
 from waitress import serve
@@ -72,7 +72,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name
 logger = logging.getLogger("app")
 
 # Keep a module-level handle to the Flask app so bot threads can open an app context safely
-APP: Optional[Flask] = None  # <-- added
+APP: Optional[Flask] = None
 
 # Public base URL used for cancel/manage links in Discord webhooks
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/") or None
@@ -268,9 +268,8 @@ async def save_state_async():
 def ensure_app_context():
     """Yield inside a Flask app context if one isn’t already active."""
     try:
-        # If this doesn’t raise, we’re already in an app/request ctx
-        from flask import current_app  # local import to avoid circulars at import time
-        _ = current_app.name  # access triggers RuntimeError if no ctx
+        from flask import current_app
+        _ = current_app.name
         yield
         return
     except Exception:
@@ -279,7 +278,6 @@ def ensure_app_context():
         with APP.app_context():
             yield
     else:
-        # As a last resort, just yield (will raise if ORM is used before APP is set)
         yield
 
 # -------------------- Multiserver helpers --------------------
@@ -433,7 +431,7 @@ def send_webhook_notification(data, reminder: bool = False, guild_id: int | None
     except requests.exceptions.RequestException as e:
         logger.error("Webhook send failed: %s", e)
 
-# -------------------- Legacy JSON helpers for activation --------------------
+# -------------------- Legacy JSON helpers for activation (NOW DB-MIRRORED) --------------------
 def title_is_vacant_now(title_name: str) -> bool:
     with state_lock:
         t = state.get('titles', {}).get(title_name, {})
@@ -445,8 +443,37 @@ def title_is_vacant_now(title_name: str) -> bool:
     expiry_dt = parse_iso_utc(exp_str)
     return bool(expiry_dt and now_utc() >= expiry_dt)
 
+def _db_upsert_active_title(title_name: str, ign: str, start_dt: datetime, end_dt: Optional[datetime]):
+    """Mirror live assignment into DB.ActiveTitle (idempotent)."""
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=UTC)
+    if end_dt and end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=UTC)
+
+    with ensure_app_context():
+        row = ActiveTitle.query.filter_by(title_name=title_name).first()
+        if not row:
+            row = ActiveTitle(title_name=title_name, holder=ign, claim_at=start_dt, expiry_at=end_dt)
+            db.session.add(row)
+        else:
+            row.holder = ign
+            row.claim_at = start_dt
+            row.expiry_at = end_dt
+        db.session.commit()
+
+def _db_delete_active_title(title_name: str):
+    """Remove from DB.ActiveTitle when released."""
+    with ensure_app_context():
+        row = ActiveTitle.query.filter_by(title_name=title_name).first()
+        if row:
+            db.session.delete(row)
+            db.session.commit()
+
 def activate_slot(title_name: str, ign: str, start_dt: datetime):
-    end_dt = start_dt + timedelta(hours=_safe_shift_hours())
+    # compute end (Harmony never expires)
+    end_dt = None if title_name == "Guardian of Harmony" else start_dt + timedelta(hours=_safe_shift_hours())
+
+    # legacy JSON mirror
     with state_lock:
         state['titles'][title_name].update({
             'holder': {'name': ign, 'coords': '-', 'discord_id': 0},
@@ -459,12 +486,19 @@ def activate_slot(title_name: str, ign: str, start_dt: datetime):
         already[slot_key] = True
         activated[title_name] = already
     _save_state_unlocked()
+
+    # NEW: persist to DB so restarts keep active holders
+    try:
+        _db_upsert_active_title(title_name, ign, start_dt, end_dt)
+    except Exception as e:
+        logger.exception("DB upsert ActiveTitle failed: %s", e)
+
     airtable_upsert("activation", {
         "Title": title_name,
         "IGN": ign,
         "Coordinates": "-",
         "SlotStartUTC": start_dt,
-        "SlotEndUTC": None if title_name == "Guardian of Harmony" else end_dt,
+        "SlotEndUTC": end_dt,
         "Source": "Auto-Activate",
         "DiscordUser": "-"
     })
@@ -481,12 +515,20 @@ def _scan_expired_titles(now_dt: datetime) -> list[str]:
     return expired
 
 def _release_title_blocking(title_name: str) -> bool:
+    # legacy state
     with state_lock:
         titles = state.get('titles', {})
         if title_name not in titles:
             return False
         titles[title_name].update({'holder': None, 'claim_date': None, 'expiry_date': None})
     _save_state_unlocked()
+
+    # NEW: persist release to DB
+    try:
+        _db_delete_active_title(title_name)
+    except Exception as e:
+        logger.exception("DB delete ActiveTitle failed: %s", e)
+
     return True
 
 # -------------------- Discord setup --------------------
@@ -545,7 +587,7 @@ def _reserve_slot_core(
     cancel_token_value: Optional[str] = None
 
     # --- DB write (works in web request OR bot thread)
-    with ensure_app_context():  # <-- critical fix
+    with ensure_app_context():
         res = (
             Reservation.query
             .filter_by(title_name=title_name, slot_dt=slot_dt)
@@ -626,7 +668,6 @@ def is_admin_or_manager():
 async def ac_requestable_titles(_interaction: discord.Interaction, current: str):
     try:
         text_filter = (current or "").lower()
-        # requestable_title_names() reads DB; guard with app ctx for bot safety
         with ensure_app_context():
             names = sorted(requestable_title_names())
         if text_filter:
@@ -691,7 +732,7 @@ async def titles_show(interaction: discord.Interaction, filter: app_commands.Cho
     ign="Your in-game name",
     coords="Coordinates (X:Y)",
     date="Date in UTC (YYYY-MM-DD)",
-    time="Start time (UTC): 00:00 or 12:00",
+    time="Start time (UTC)",
 )
 @app_commands.autocomplete(title=ac_requestable_titles)
 @app_commands.choices(time=_time_choices())
@@ -717,7 +758,7 @@ async def titles_reserve(
                 self.ign = discord.ui.TextInput(label="In-Game Name", max_length=64, required=True)
                 self.coords = discord.ui.TextInput(label="Coordinates (X:Y)", required=True, max_length=32, placeholder="e.g. 123:456")
                 self.date = discord.ui.TextInput(label="Date (UTC) YYYY-MM-DD", required=True, placeholder="YYYY-MM-DD")
-                self.time = discord.ui.TextInput(label="Time (UTC) HH:MM", required=True, placeholder="00:00 or 12:00")
+                self.time = discord.ui.TextInput(label="Time (UTC) HH:MM", required=True, placeholder="Valid slot time")
                 self.add_item(self.ign); self.add_item(self.coords); self.add_item(self.date); self.add_item(self.time)
             async def on_submit(self, interaction: discord.Interaction):
                 try:
@@ -893,6 +934,28 @@ def _sqlite_pragmas(dbapi_connection, connection_record):
         cur.close()
     except Exception:
         pass
+
+def _rehydrate_state_from_db_actives():
+    """
+    On startup/redeploy, load DB ActiveTitle into the legacy JSON state,
+    so the web/discord features depending on state don't show empty data.
+    """
+    with ensure_app_context():
+        rows = ActiveTitle.query.all()
+    with state_lock:
+        titles = state.setdefault('titles', {})
+        for row in rows:
+            start = row.claim_at if row.claim_at.tzinfo else row.claim_at.replace(tzinfo=UTC)
+            exp = row.expiry_at
+            if exp and exp.tzinfo is None:
+                exp = exp.replace(tzinfo=UTC)
+            titles.setdefault(row.title_name, {})
+            titles[row.title_name].update({
+                'holder': {'name': row.holder, 'coords': '-', 'discord_id': 0},
+                'claim_date': start.isoformat(),
+                'expiry_date': (exp.isoformat() if exp else None),
+            })
+    save_state()
 
 def create_app() -> Flask:
     app = Flask(__name__)
@@ -1076,7 +1139,7 @@ def create_app() -> Flask:
                 parse_iso_utc=parse_iso_utc, now_utc=now_utc,
                 iso_slot_key_naive=iso_slot_key_naive,
                 title_is_vacant_now=title_is_vacant_now,
-                get_shift_hours=_safe_shift_hours,   # <-- backward compatible
+                get_shift_hours=_safe_shift_hours,
                 bot=bot, state_lock=state_lock,
                 send_webhook_notification=send_webhook_notification,
                 db=db,
@@ -1132,8 +1195,8 @@ def create_app() -> Flask:
             }, 200
 
     # expose app globally for bot thread
-    global APP          # <-- added
-    APP = app           # <-- added
+    global APP
+    APP = app
     return app
 
 # -------------------- Discord lifecycle --------------------
@@ -1141,6 +1204,12 @@ def create_app() -> Flask:
 async def on_ready():
     load_state()
     initialize_titles()
+
+    # NEW: rehydrate JSON state from DB ActiveTitle so deploys keep live holders
+    try:
+        _rehydrate_state_from_db_actives()
+    except Exception as e:
+        logger.exception("Rehydrate from DB ActiveTitle failed: %s", e)
 
     if not bot.get_cog("TitleManager"):
         await bot.add_cog(TitleCog(bot))
@@ -1161,7 +1230,7 @@ async def on_ready():
 # -------------------- Entrypoint --------------------
 def run_flask_app(app: Flask):
     port = int(os.getenv("PORT", "10000"))
-    threads = int(os.getenv("WAITRESS_THREADS", "8"))  # new: allow tuning via env
+    threads = int(os.getenv("WAITRESS_THREADS", "8"))
     logger.info("Starting Flask server on port %d with %d threads", port, threads)
     serve(app, host='0.0.0.0', port=port, threads=threads)
 
