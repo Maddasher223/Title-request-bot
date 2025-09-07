@@ -112,7 +112,7 @@ def register_admin(app, deps: dict):
         reservation_count = M.Reservation.query.count()
         servers = M.ServerConfig.query.order_by(M.ServerConfig.guild_id.asc()).all()
         return render_template(
-            "admin_dashboard.html",
+            "admin.html",
             shift=shift,
             stats={
                 "title_count": title_count,
