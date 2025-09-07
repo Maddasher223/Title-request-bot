@@ -166,14 +166,38 @@
         });
       }
 
-      // Password visibility toggle
+      // Password visibility toggle + focus/caret fixes
       if (toggleBtn && passwordInput && eyeOpen && eyeClosed) {
+        // Prevent button from stealing focus from the input
+        toggleBtn.addEventListener('mousedown', function (e) { e.preventDefault(); });
+
+        // Keyboard-friendly: make Space/Enter toggle without scrolling the page
+        toggleBtn.addEventListener('keydown', function (e) {
+          if (e.key === ' ' || e.key === 'Enter') {
+            e.preventDefault();
+            toggleBtn.click();
+          }
+        });
+
         toggleBtn.addEventListener('click', function () {
           const isPassword = passwordInput.type === 'password';
           passwordInput.type = isPassword ? 'text' : 'password';
+
+          // Swap icons
           eyeOpen.style.display = isPassword ? 'none' : 'block';
           eyeClosed.style.display = isPassword ? 'block' : 'none';
           toggleBtn.setAttribute('aria-label', isPassword ? 'Hide password' : 'Show password as plain text.');
+
+          // Restore focus and caret position to end so typing continues naturally
+          try {
+            const pos = passwordInput.value.length;
+            passwordInput.focus({ preventScroll: true });
+            // setSelectionRange works in supported inputs even when type toggles
+            passwordInput.setSelectionRange(pos, pos);
+          } catch (_) {
+            // noop—best effort
+            passwordInput.focus({ preventScroll: true });
+          }
         });
       }
     })();
