@@ -1161,8 +1161,9 @@ async def on_ready():
 # -------------------- Entrypoint --------------------
 def run_flask_app(app: Flask):
     port = int(os.getenv("PORT", "10000"))
-    logger.info("Starting Flask server on port %d", port)
-    serve(app, host='0.0.0.0', port=port)
+    threads = int(os.getenv("WAITRESS_THREADS", "8"))  # new: allow tuning via env
+    logger.info("Starting Flask server on port %d with %d threads", port, threads)
+    serve(app, host='0.0.0.0', port=port, threads=threads)
 
 if __name__ == "__main__":
     app = create_app()
