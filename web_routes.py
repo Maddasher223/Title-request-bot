@@ -8,43 +8,48 @@ from flask import render_template, request, redirect, url_for, flash, session
 
 def register_routes(app, deps):
     """
-    Injected dependencies from main.py:
-      deps = {
-        ORDERED_TITLES, TITLES_CATALOG, ICON_FILES, REQUESTABLE, ADMIN_PIN,
-        state, save_state, log_action, log_to_csv, send_webhook_notification, send_to_log_channel,
-        parse_iso_utc, now_utc, iso_slot_key_naive, in_current_slot, title_is_vacant_now,
-        compute_next_reservation_for_title, get_all_upcoming_reservations, set_shift_hours,
-        get_shift_hours, bot
-      }
+    Expected deps (robust to optional ones):
+      ORDERED_TITLES, TITLES_CATALOG, ICON_FILES, REQUESTABLE, ADMIN_PIN,
+      state, save_state, log_action, log_to_csv, send_webhook_notification,
+      parse_iso_utc, now_utc, iso_slot_key_naive, title_is_vacant_now,
+      get_shift_hours, bot,
+      # optional
+      db_helpers (dict with set_shift_hours, etc.),
+      send_to_log_channel (async func), schedule_lookup (optional)
     """
-    # ----- Unpack deps -----
+    # ----- Unpack deps (robustly) -----
     ORDERED_TITLES = deps['ORDERED_TITLES']
     TITLES_CATALOG = deps['TITLES_CATALOG']
-    ICON_FILES = deps.get('ICON_FILES', {})  # <— prevents KeyError
-    REQUESTABLE = deps['REQUESTABLE']
-    ADMIN_PIN = deps['ADMIN_PIN']
+    ICON_FILES     = deps.get('ICON_FILES', {})        # {title_name: "/static/icons/..png"}
+    REQUESTABLE    = deps['REQUESTABLE']
+    ADMIN_PIN      = deps['ADMIN_PIN']
 
-    state = deps['state']
-    save_state = deps['save_state']
-    log_action = deps['log_action']
-    log_to_csv = deps['log_to_csv']
+    state          = deps['state']
+    save_state     = deps['save_state']
+    log_action     = deps['log_action']
+    log_to_csv     = deps['log_to_csv']
     send_webhook_notification = deps['send_webhook_notification']
-    send_to_log_channel = deps['send_to_log_channel']
 
-    parse_iso_utc = deps['parse_iso_utc']
-    now_utc = deps['now_utc']
+    parse_iso_utc  = deps['parse_iso_utc']
+    now_utc        = deps['now_utc']
     iso_slot_key_naive = deps['iso_slot_key_naive']
-    in_current_slot = deps['in_current_slot']
     title_is_vacant_now = deps['title_is_vacant_now']
-    compute_next_reservation_for_title = deps['compute_next_reservation_for_title']
-    get_all_upcoming_reservations = deps['get_all_upcoming_reservations']
-    set_shift_hours = deps['set_shift_hours']
     get_shift_hours = deps['get_shift_hours']
 
-    bot = deps['bot']
+    bot            = deps['bot']
+    db_helpers     = deps.get('db_helpers', {})
+    # Optional helpers (no-ops if absent)
+    set_shift_hours = deps.get('set_shift_hours') or db_helpers.get('set_shift_hours') or (lambda *_: None)
+    schedule_lookup = deps.get('schedule_lookup')  # may be None
+
+    # Optional: async logger channel
+    async def _noop_log_channel(_bot, _msg):
+        return
+    send_to_log_channel = deps.get('send_to_log_channel', _noop_log_channel)
+
     UTC = timezone.utc
 
-    # ----- Helpers -----
+    # ----- Utilities -----
     def schedule_on_bot_loop(coro):
         """Run an async coroutine safely on the Discord bot loop from Flask thread and return its Future."""
         try:
@@ -62,6 +67,39 @@ def register_routes(app, deps):
         if isinstance(reservation, dict):
             return reservation.get('coords', '-')
         return '-'
+
+    def _compute_next_reservation_for_title(title_name: str):
+        """Return (slot_iso, ign) for the earliest future reservation for a title."""
+        sched = state.get('schedules', {}).get(title_name, {})
+        future = []
+        now = now_utc()
+        for k, v in sched.items():
+            dt = parse_iso_utc(k) or datetime.fromisoformat(k).replace(tzinfo=UTC)
+            if dt >= now:
+                future.append((dt, v))
+        if not future:
+            return None, None
+        future.sort(key=lambda x: x[0])
+        dt, v = future[0]
+        return dt.strftime("%Y-%m-%dT%H:%M:%S"), _reservation_to_ign(v)
+
+    def _get_all_upcoming_reservations(days_ahead: int = 7):
+        """Return a list of {title, slot_iso, ign, coords} for the next N days, sorted by time."""
+        now = now_utc()
+        cutoff = now + timedelta(days=days_ahead)
+        items = []
+        for title_name, sched in state.get('schedules', {}).items():
+            for k, v in sched.items():
+                dt = parse_iso_utc(k) or datetime.fromisoformat(k).replace(tzinfo=UTC)
+                if now <= dt <= cutoff:
+                    items.append({
+                        "title": title_name,
+                        "slot_iso": dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "ign": _reservation_to_ign(v),
+                        "coords": _reservation_to_coords(v),
+                    })
+        items.sort(key=lambda r: r["slot_iso"])
+        return items
 
     # ----- ALWAYS ensure state shape before any request -----
     @app.before_request
@@ -101,7 +139,7 @@ def register_routes(app, deps):
                 holder = data['holder']
                 holder_info = f"{holder.get('name','?')} ({holder.get('coords','-')})"
 
-            remaining = "N/A"
+            remaining = "—"
             if data.get('expiry_date'):
                 try:
                     expiry = parse_iso_utc(data['expiry_date'])
@@ -110,35 +148,51 @@ def register_routes(app, deps):
                 except Exception:
                     remaining = "Invalid"
 
-            next_slot_key, next_ign = compute_next_reservation_for_title(title_name)
+            next_slot_key, next_ign = _compute_next_reservation_for_title(title_name)
             next_res_text = f"{next_slot_key} by {next_ign}" if (next_slot_key and next_ign) else "—"
 
-            local_icon = url_for('static', filename=f"icons/{ICON_FILES[title_name]}")
+            # ICON_FILES already contains paths like "/static/icons/..png"
+            icon_path = ICON_FILES.get(title_name) or TITLES_CATALOG[title_name].get('image')
+
             titles_data.append({
                 'name': title_name,
                 'holder': holder_info,
                 'expires_in': remaining,
-                'icon': local_icon,
+                'icon': icon_path,
                 'buffs': TITLES_CATALOG[title_name]['effects'],
                 'next_reserved': next_res_text
             })
 
         today = now_utc().date()
         days = [(today + timedelta(days=i)) for i in range(7)]
-        hours = [f"{h:02d}:00" for h in range(0, 24, 3)]  # 3h grid for visibility
+        # show 00:00 and 12:00 by default
+        hours = ["00:00", "12:00"]
         schedules = state.get('schedules', {})
         requestable_titles = REQUESTABLE
         cfg = state.get('config', {})
+
+        # Template expects `schedule_lookup`-style nested dict? Provide a simple one.
+        # { date_iso: { "HH:MM": { title_name: {"ign":..,"coords":..} } } }
+        schedule_grid = {}
+        for title_name, sched in schedules.items():
+            for k, v in sched.items():
+                dt = parse_iso_utc(k) or datetime.fromisoformat(k).replace(tzinfo=UTC)
+                dkey = dt.date().isoformat()
+                tkey = dt.strftime("%H:%M")
+                day_map = schedule_grid.setdefault(dkey, {})
+                time_map = day_map.setdefault(tkey, {})
+                time_map[title_name] = v
 
         return render_template(
             'dashboard.html',
             titles=titles_data,
             days=days,
             hours=hours,
-            schedules=schedules,
+            schedule_lookup=schedule_grid,
             today=today.strftime('%Y-%m-%d'),
             requestable_titles=requestable_titles,
-            config=cfg  # so the template can show current shift hours
+            shift_hours=get_shift_hours(),
+            config=cfg
         )
 
     @app.route("/log")
@@ -169,7 +223,7 @@ def register_routes(app, deps):
         try:
             schedule_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
         except ValueError:
-            flash("Time must be HH:MM (24h), e.g., 15:00.")
+            flash("Time must be HH:MM (24h), e.g., 12:00.")
             return redirect(url_for("dashboard"))
         if schedule_time < now_utc():
             flash("Cannot schedule a time in the past.")
@@ -187,9 +241,7 @@ def register_routes(app, deps):
             schedules_for_title[schedule_key] = {"ign": ign, "coords": coords or "-"}
 
             # Log
-            log_action('schedule_book_web', 0, {
-                'title': title_name, 'time': schedule_key, 'ign': ign, 'coords': coords or '-'
-            })
+            log_action('schedule_book_web', title=title_name, time=schedule_key, ign=ign, coords=(coords or '-'))
 
             # If current slot and vacant, grant now
             hours = get_shift_hours()
@@ -202,14 +254,14 @@ def register_routes(app, deps):
                     'expiry_date': end.isoformat(),
                     'pending_claimant': None
                 })
-                log_action('auto_assign_now', 0, {'title': title_name, 'ign': ign, 'start': schedule_time.isoformat()})
+                log_action('auto_assign_now', title=title_name, ign=ign, start=schedule_time.isoformat())
 
             await save_state()
             return True, None
 
         fut = schedule_on_bot_loop(_reserve_and_maybe_assign_now())
         try:
-            ok, existing_val = fut.result(timeout=3) if fut else (False, None)
+            ok, existing_val = fut.result(timeout=4) if fut else (False, None)
         except Exception:
             ok, existing_val = (False, None)
 
@@ -286,7 +338,7 @@ def register_routes(app, deps):
                 })
 
         # Upcoming reservations + annotate approval flag
-        upcoming = get_all_upcoming_reservations()
+        upcoming = _get_all_upcoming_reservations()
         approvals = state.get("approvals", {})
         for item in upcoming:
             t = item["title"]
@@ -564,32 +616,26 @@ def register_routes(app, deps):
             return redirect(url_for("admin_login_form"))
 
         announce = (request.form.get("announce_channel") or "").strip()
-        logch = (request.form.get("log_channel") or "").strip()
-        shift = (request.form.get("shift_hours") or "").strip()
+        logch    = (request.form.get("log_channel") or "").strip()
+        shift    = (request.form.get("shift_hours") or "").strip()
 
         async def _apply_settings():
             cfg = state.setdefault("config", {})
-            if announce:
-                try:
-                    cfg["announcement_channel"] = int(announce)
-                except ValueError:
-                    # we'll set a flash outside; do not fail here
-                    pass
-            if logch:
-                try:
-                    cfg["log_channel"] = int(logch)
-                except ValueError:
-                    pass
+            if announce and announce.isdigit():
+                cfg["announcement_channel"] = int(announce)
+            if logch and logch.isdigit():
+                cfg["log_channel"] = int(logch)
             if shift:
                 try:
-                    cfg["shift_hours"] = int(shift)
-                    set_shift_hours(cfg["shift_hours"])  # updates global + persists in state
+                    val = int(shift)
+                    cfg["shift_hours"] = val
+                    set_shift_hours(val)
                 except ValueError:
                     pass
             await save_state()
             return True
 
-        # Keep user feedback for bad inputs via flash (outside the coroutine)
+        # user feedback for bad inputs
         if announce and not announce.isdigit():
             flash("Announcement channel must be a numeric ID.")
         if logch and not logch.isdigit():
