@@ -6,7 +6,7 @@
             "claim_date": null,
             "expiry_date": null,
             "pending_claimant": null,
-            "icon": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793727018569758/guardian_harmony.png",
+            "icon": "icons/guardian_harmony.png",
             "buffs": "All benders' ATK +5%, All benders' DEF +5%, All Benders' recruiting speed +15%"
         },
         "Guardian of Air": {
@@ -15,7 +15,7 @@
             "claim_date": null,
             "expiry_date": null,
             "pending_claimant": null,
-            "icon": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793463817605181/guardian_air.png",
+            "icon": "icons/guardian_air.png",
             "buffs": "All Resource Gathering Speed +20%, All Resource Production +20%"
         },
         "Guardian of Water": {
@@ -24,7 +24,7 @@
             "claim_date": null,
             "expiry_date": null,
             "pending_claimant": null,
-            "icon": "https://cdn.discordapp.com/attachments/1409793076955840583/1409793588778369104/guardian_water.png",
+            "icon": "icons/guardian_water.png",
             "buffs": "All Benders' recruiting speed +15%"
         },
         "Guardian of Earth": {
@@ -33,7 +33,7 @@
             "claim_date": null,
             "expiry_date": null,
             "pending_claimant": null,
-            "icon": "https://cdn.discordapp.com/attachments/1409793076955840583/1409794927730229278/guardian_earth.png",
+            "icon": "icons/guardian_earth.png",
             "buffs": "Construction Speed +10%, Research Speed +10%"
         },
         "Guardian of Fire": {
@@ -42,7 +42,7 @@
             "claim_date": null,
             "expiry_date": null,
             "pending_claimant": null,
-            "icon": "https://cdn.discordapp.com/attachments/1409793076955840583/1409794024948367380/guardian_fire.png",
+            "icon": "icons/guardian_fire.png",
             "buffs": "All benders' ATK +5%, All benders' DEF +5%"
         },
         "Architect": {
@@ -51,7 +51,7 @@
             "claim_date": null,
             "expiry_date": null,
             "pending_claimant": null,
-            "icon": "https://cdn.discordapp.com/attachments/1409793076955840583/1409796581661605969/architect.png",
+            "icon": "icons/architect.png",
             "buffs": "Construction Speed +10%"
         },
         "General": {
@@ -60,7 +60,7 @@
             "claim_date": null,
             "expiry_date": null,
             "pending_claimant": null,
-            "icon": "https://cdn.discordapp.com/attachments/1409793076955840583/1409796597277266000/general.png",
+            "icon": "icons/general.png",
             "buffs": "All benders' ATK +5%"
         },
         "Governor": {
@@ -69,7 +69,7 @@
             "claim_date": null,
             "expiry_date": null,
             "pending_claimant": null,
-            "icon": "https://cdn.discordapp.com/attachments/1409793076955840583/1409796936227356723/governor.png",
+            "icon": "icons/governor.png",
             "buffs": "All Benders' recruiting speed +10%"
         },
         "Prefect": {
@@ -78,7 +78,7 @@
             "claim_date": null,
             "expiry_date": null,
             "pending_claimant": null,
-            "icon": "https://cdn.discordapp.com/attachments/1409793076955840583/1409797574763741205/prefect.png",
+            "icon": "icons/prefect.png",
             "buffs": "Research Speed +10%"
         }
     },

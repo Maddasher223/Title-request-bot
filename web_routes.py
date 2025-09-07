@@ -20,7 +20,7 @@ def register_routes(app, deps):
     # ----- Unpack deps -----
     ORDERED_TITLES = deps['ORDERED_TITLES']
     TITLES_CATALOG = deps['TITLES_CATALOG']
-    ICON_FILES = deps['ICON_FILES']
+    ICON_FILES = deps.get('ICON_FILES', {})  # <— prevents KeyError
     REQUESTABLE = deps['REQUESTABLE']
     ADMIN_PIN = deps['ADMIN_PIN']
 
