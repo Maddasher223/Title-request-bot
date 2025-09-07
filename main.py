@@ -19,6 +19,7 @@ from waitress import serve
 
 import discord
 from discord.ext import commands, tasks
+from discord.errors import LoginFailure
 from discord import app_commands
 
 from web_routes import register_routes
@@ -210,6 +211,7 @@ if isinstance(TITLES_CATALOG, tuple) and len(TITLES_CATALOG) == 1 and isinstance
 
 ORDERED_TITLES = list(TITLES_CATALOG.keys())
 REQUESTABLE = {t for t in ORDERED_TITLES if t != "Guardian of Harmony"}
+
 
 # ========= Environment & Config =========
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -1138,11 +1140,15 @@ class TitleCog(commands.Cog, name="TitleManager"):
         await ctx.send(f"Announcement channel set to {channel.mention}.")
 
 # ========= Register Flask routes from web_routes.py =========
+# Define ICON_FILES for use in route dependencies
+ICON_FILES = {name: data.get('image') for name, data in TITLES_CATALOG.items()}
+
 register_routes(
     app=app,
     deps=dict(
         ORDERED_TITLES=ORDERED_TITLES, TITLES_CATALOG=TITLES_CATALOG,
         REQUESTABLE=REQUESTABLE, ADMIN_PIN=ADMIN_PIN,
+        ICON_FILES=ICON_FILES,  # <-- add this
         state=state, save_state=save_state, log_to_csv=log_to_csv,
         parse_iso_utc=parse_iso_utc, now_utc=now_utc,
         iso_slot_key_naive=iso_slot_key_naive,
@@ -1220,14 +1226,29 @@ async def on_ready():
         logger.error("Slash sync failed: %s", e)
 
     logger.info(f'{bot.user.name} has connected to Discord!')
-    Thread(target=run_flask_app, daemon=True).start()
 
 # ========= Main Entry Point =========
 if __name__ == "__main__":
-    if not DISCORD_TOKEN:
-        logger.critical("FATAL: DISCORD_TOKEN environment variable not set.")
-    else:
+    # Load multi-server env configs before any use
+    try:
+        SERVER_CONFIGS.update(_parse_multi_server_configs())
+        logging.info("Loaded %d server config(s): %s", len(SERVER_CONFIGS), list(SERVER_CONFIGS.keys()))
+    except Exception:
+        logging.exception("Failed to parse multi-server env config.")
+
+    token = (os.getenv("DISCORD_TOKEN") or "").strip()
+    def _run_bot():
         try:
-            bot.run(DISCORD_TOKEN)
-        except discord.errors.LoginFailure:
-            logger.critical("FATAL: Improper token has been passed.")
+            if not token:
+                logging.error("DISCORD_TOKEN is empty or missing; running web only.")
+                return
+            bot.run(token)
+        except LoginFailure:
+            logging.exception("Discord login failed (bad token). Running web only.")
+        except Exception:
+            logging.exception("Discord bot crashed unexpectedly. Web continues.")
+
+    if token:
+        Thread(target=_run_bot, daemon=True).start()
+
+    run_flask_app()  # serve(app, host=..., port=...) in main thread
