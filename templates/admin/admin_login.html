@@ -42,7 +42,7 @@
 
     h1{margin:0 0 18px;font:700 26px 'Caudex',serif;color:var(--bright)}
 
-    /* Flash messages (a11y + categories) */
+    /* Flash messages */
     .flash-list{margin:0 0 14px;padding:0;list-style:none}
     .flash{
       padding:12px 14px;border-radius:10px;font-weight:700;line-height:1.4;
@@ -65,10 +65,18 @@
     .toggle-password{
       position:absolute;right:1px;top:1px;bottom:1px;
       border:none;background:none;padding:0 12px;cursor:pointer;
-      color:var(--muted);transition:color .2s
+      color:var(--muted);transition:color .2s, opacity .15s ease;
     }
     .toggle-password:hover{color:var(--bright)}
     .toggle-password svg{width:20px;height:20px}
+
+    /* NEW: hide eye while there is content so it never overlaps typing */
+    .input-wrapper.has-value .toggle-password{
+      opacity:0; pointer-events:none;
+    }
+    .input-wrapper.has-value input{
+      padding-right:14px; /* reclaim space when eye is hidden */
+    }
 
     button{
       width:100%;padding:14px;border:none;border-radius:10px;
@@ -89,7 +97,7 @@
     button.is-loading .btn-text{opacity:0}
     button.is-loading .spinner{display:block}
 
-    /* Decorative vault seal (match palette) */
+    /* Decorative vault seal */
     .vault-seal{
       width:70px;height:70px;margin:0 auto 18px;display:block;color:var(--primary);
       transition:transform .3s ease-out, filter .3s ease-out
@@ -126,7 +134,7 @@
       <!-- If using CSRF, include it here -->
       <div class="field">
         <label for="pin">Password</label>
-        <div class="input-wrapper">
+        <div class="input-wrapper" id="pin-wrapper">
           <input id="pin" name="pin" type="password"
                  placeholder="Enter Admin Password"
                  required inputmode="text" autocomplete="current-password"
@@ -154,11 +162,12 @@
       const form = document.querySelector('form');
       const btn = document.getElementById('login-btn');
       const passwordInput = document.getElementById('pin');
+      const wrapper = document.getElementById('pin-wrapper');
       const toggleBtn = document.getElementById('toggle-password');
       const eyeOpen = document.getElementById('eye-open');
       const eyeClosed = document.getElementById('eye-closed');
 
-      // Prevent double-submit and show loading state
+      // 1) Prevent double-submit and show loading state
       if (form && btn) {
         form.addEventListener('submit', function(){
           btn.disabled = true;
@@ -166,12 +175,32 @@
         });
       }
 
-      // Password visibility toggle + focus/caret fixes
+      // 2) Live "has-value" class to hide the eye while typing
+      function refreshHasValue(){
+        if (!wrapper) return;
+        const hasValue = !!(passwordInput && passwordInput.value.length);
+        wrapper.classList.toggle('has-value', hasValue);
+        // if the eye is hidden, also make it non-focusable for a11y
+        if (toggleBtn) {
+          const hidden = wrapper.classList.contains('has-value');
+          toggleBtn.tabIndex = hidden ? -1 : 0;
+          toggleBtn.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+        }
+      }
+      if (passwordInput) {
+        ['input','focus','blur','change'].forEach(ev => {
+          passwordInput.addEventListener(ev, refreshHasValue);
+        });
+        // initial state
+        refreshHasValue();
+      }
+
+      // 3) Password visibility toggle (keeps focus/caret)
       if (toggleBtn && passwordInput && eyeOpen && eyeClosed) {
-        // Prevent button from stealing focus from the input
+        // Keep focus on input (no caret jump)
         toggleBtn.addEventListener('mousedown', function (e) { e.preventDefault(); });
 
-        // Keyboard-friendly: make Space/Enter toggle without scrolling the page
+        // Keyboard: Space/Enter toggles
         toggleBtn.addEventListener('keydown', function (e) {
           if (e.key === ' ' || e.key === 'Enter') {
             e.preventDefault();
@@ -188,18 +217,25 @@
           eyeClosed.style.display = isPassword ? 'block' : 'none';
           toggleBtn.setAttribute('aria-label', isPassword ? 'Hide password' : 'Show password as plain text.');
 
-          // Restore focus and caret position to end so typing continues naturally
+          // Restore focus & caret at end
           try {
             const pos = passwordInput.value.length;
             passwordInput.focus({ preventScroll: true });
-            // setSelectionRange works in supported inputs even when type toggles
             passwordInput.setSelectionRange(pos, pos);
           } catch (_) {
-            // noop—best effort
             passwordInput.focus({ preventScroll: true });
           }
         });
       }
+
+      // 4) UX copy fix: change any "pin" wording to "password" in flashed messages
+      const flashes = document.querySelectorAll('.flash');
+      flashes.forEach(el => {
+        const t = el.textContent;
+        if (t && /pin/i.test(t)) {
+          el.textContent = t.replace(/pin/gi, 'password');
+        }
+      });
     })();
   </script>
 </body>
