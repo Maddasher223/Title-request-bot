@@ -14,6 +14,7 @@ from flask import (
     session, flash, send_file, current_app
 )
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_
 
 UTC = timezone.utc
 
@@ -61,6 +62,7 @@ def register_admin(app, deps: dict):
         def wrapper(*a, **kw):
             if session.get("is_admin"):
                 return fn(*a, **kw)
+            # preserve where we were headed
             return redirect(url_for("admin.login", next=request.path))
         return wrapper
 
@@ -193,27 +195,51 @@ def register_admin(app, deps: dict):
                     flash("Unknown title.", "error")
 
             elif action == "rename":
-                old = request.form.get("old_name")
+                old = (request.form.get("old_name") or "").strip()
                 new = (request.form.get("new_name") or "").strip()
                 if not (old and new):
                     flash("Provide both old and new names.", "error")
+                elif old == new:
+                    flash("New name is the same as the old name.", "error")
                 else:
                     t = M.Title.query.filter_by(name=old).first()
-                    if t:
-                        t.name = new
-                        db.session.commit()
-                        flash(f"Renamed '{old}' → '{new}'", "success")
-                    else:
+                    if not t:
                         flash("Unknown title to rename.", "error")
+                    elif M.Title.query.filter_by(name=new).first():
+                        flash(f"Name '{new}' already exists.", "error")
+                    else:
+                        try:
+                            # Transaction: rename Title and propagate to dependents
+                            t.name = new
+                            # Update dependent tables to keep data consistent
+                            M.ActiveTitle.query.filter_by(title_name=old).update({"title_name": new})
+                            M.Reservation.query.filter_by(title_name=old).update({"title_name": new})
+                            db.session.commit()
+                            flash(f"Renamed '{old}' → '{new}'", "success")
+                        except IntegrityError:
+                            db.session.rollback()
+                            flash("Rename failed due to a uniqueness/constraint error.", "error")
+                        except Exception as e:
+                            db.session.rollback()
+                            current_app.logger.exception("rename title failed: %s", e)
+                            flash("Internal error while renaming.", "error")
 
             elif action == "icon":
-                name = request.form.get("name")
+                name = (request.form.get("name") or "").strip()
                 icon = (request.form.get("icon_url") or "").strip()
                 t = M.Title.query.filter_by(name=name).first()
                 if t and icon:
-                    t.icon_url = icon
-                    db.session.commit()
-                    flash(f"Updated icon for '{name}'.", "success")
+                    try:
+                        # very light validation; avoid empty/whitespace-only
+                        if len(icon) < 2:
+                            raise ValueError("Empty icon URL")
+                        t.icon_url = icon
+                        db.session.commit()
+                        flash(f"Updated icon for '{name}'.", "success")
+                    except Exception as e:
+                        db.session.rollback()
+                        current_app.logger.exception("icon update failed: %s", e)
+                        flash("Failed to update icon.", "error")
                 elif not t:
                     flash("Unknown title.", "error")
                 else:
@@ -234,9 +260,9 @@ def register_admin(app, deps: dict):
         if q:
             like = f"%{q}%"
             query = query.filter(
-                db.or_(M.Reservation.title_name.ilike(like),
-                       M.Reservation.ign.ilike(like),
-                       M.Reservation.coords.ilike(like))
+                or_(M.Reservation.title_name.ilike(like),
+                    M.Reservation.ign.ilike(like),
+                    M.Reservation.coords.ilike(like))
             )
 
         total = query.count()
@@ -256,9 +282,9 @@ def register_admin(app, deps: dict):
         if q:
             like = f"%{q}%"
             query = query.filter(
-                db.or_(M.Reservation.title_name.ilike(like),
-                       M.Reservation.ign.ilike(like),
-                       M.Reservation.coords.ilike(like))
+                or_(M.Reservation.title_name.ilike(like),
+                    M.Reservation.ign.ilike(like),
+                    M.Reservation.coords.ilike(like))
             )
         out = io.StringIO()
         w = csv.writer(out)

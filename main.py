@@ -12,7 +12,7 @@ import requests
 import secrets
 from threading import Thread, RLock
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import List, Optional
 
 from flask import Flask
 from waitress import serve
@@ -111,7 +111,7 @@ SHIFT_HOURS = 12  # default shift window
 def now_utc() -> datetime:
     return datetime.now(UTC)
 
-def parse_iso_utc(s: str) -> datetime | None:
+def parse_iso_utc(s: str) -> Optional[datetime]:
     if not s:
         return None
     try:
@@ -133,7 +133,10 @@ def to_iso_utc(val) -> str:
     if isinstance(val, datetime):
         dt = val
     else:
-        dt = parse_iso_utc(val) or datetime.fromisoformat(str(val)).replace(tzinfo=UTC)
+        try:
+            dt = parse_iso_utc(val) or datetime.fromisoformat(str(val)).replace(tzinfo=UTC)
+        except Exception:
+            dt = now_utc()
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC).isoformat()
@@ -212,7 +215,6 @@ if isinstance(TITLES_CATALOG, tuple) and len(TITLES_CATALOG) == 1 and isinstance
 ORDERED_TITLES = list(TITLES_CATALOG.keys())
 REQUESTABLE = {t for t in ORDERED_TITLES if t != "Guardian of Harmony"}
 
-
 # ========= Environment & Config =========
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 ADMIN_PIN = os.getenv("ADMIN_PIN", "letmein")
@@ -227,7 +229,7 @@ if not PUBLIC_BASE_URL:
         "PUBLIC_BASE_URL not set; manage/cancel links will be omitted from notifications."
     )
 
-def build_public_url(path: str) -> str | None:
+def build_public_url(path: str) -> Optional[str]:
     """Build an absolute URL for user-facing links. Returns None if not configured."""
     if not PUBLIC_BASE_URL:
         return None
@@ -336,6 +338,11 @@ def save_state():
     with state_lock:
         _save_state_unlocked()
 
+# ASYNC WRAPPER so web_routes.py can `await save_state` safely
+async def save_state_async():
+    """Run blocking save_state in a worker thread to allow `await` from async code."""
+    await asyncio.to_thread(save_state)
+
 def _choose_server_config(guild_id: int | None):
     """
     Decide which server config to use:
@@ -372,6 +379,14 @@ def _choose_server_config(guild_id: int | None):
 
     return None, None
 
+def _safe_shift_hours() -> int:
+    """Fetch shift hours from DB if possible; fallback to env default."""
+    try:
+        with app.app_context():
+            return int(db_get_shift_hours())
+    except Exception:
+        return SHIFT_HOURS
+
 def send_webhook_notification(data, reminder: bool = False, guild_id: int | None = None):
     """
     Multi-server aware: picks webhook/role per guild.
@@ -384,10 +399,11 @@ def send_webhook_notification(data, reminder: bool = False, guild_id: int | None
         logger.warning("No webhook configured for this event; skipping notification.")
         return
 
+    shift_hours = _safe_shift_hours()
     role_tag = f"<@&{role_id}>" if role_id else ""
     if reminder:
         title = f"Reminder: {data.get('title_name','-')} shift starts soon!"
-        content = f"{role_tag} The {db_get_shift_hours()}-hour shift for **{data.get('title_name','-')}** by **{data.get('in_game_name','-')}** starts in 5 minutes!"
+        content = f"{role_tag} The {shift_hours}-hour shift for **{data.get('title_name','-')}** by **{data.get('in_game_name','-')}** starts in 5 minutes!"
     else:
         title = "New Title Reservation"
         content = f"{role_tag} A new title was reserved via the web form."
@@ -433,7 +449,7 @@ def title_is_vacant_now(title_name: str) -> bool:
 
 # ========= Activation / Release Helpers (legacy JSON path for auto-activate) =========
 def activate_slot(title_name: str, ign: str, start_dt: datetime):
-    end_dt = start_dt + timedelta(hours=db_get_shift_hours())
+    end_dt = start_dt + timedelta(hours=_safe_shift_hours())
     with state_lock:
         state['titles'][title_name].update({
             'holder': {'name': ign, 'coords': '-', 'discord_id': 0},
@@ -480,7 +496,7 @@ def _release_title_blocking(title_name: str) -> bool:
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET
 
-def get_default_guild_id() -> int | None:
+def get_default_guild_id() -> Optional[int]:
     # 1) DB default
     try:
         with app.app_context():
@@ -778,7 +794,7 @@ def _reserve_slot_core(
     if start_dt <= now_utc():
         raise ValueError("The chosen time is in the past.")
 
-    allowed = set(compute_slots(db_get_shift_hours()))
+    allowed = set(compute_slots(_safe_shift_hours()))
     hhmm = start_dt.strftime("%H:%M")
     if hhmm not in allowed:
         raise ValueError(f"Time must be one of {sorted(allowed)} UTC.")
@@ -792,7 +808,7 @@ def _reserve_slot_core(
     slot_key = iso_slot_key_naive(slot_dt)
 
     # ---- DB write (and capture token BEFORE leaving the session) ----
-    cancel_token_value: str | None = None  # FIX: use a local snapshot
+    cancel_token_value: Optional[str] = None
     with app.app_context():
         res = (
             Reservation.query
@@ -807,11 +823,11 @@ def _reserve_slot_core(
             # Ensure older rows get a token
             if not res.cancel_token:
                 res.cancel_token = secrets.token_urlsafe(32)
-                db.session.flush()  # FIX: make sure token is set in-memory
-            cancel_token_value = res.cancel_token  # FIX: snapshot before commit
+                db.session.flush()
+            cancel_token_value = res.cancel_token
             db.session.commit()
         else:
-            new_token = secrets.token_urlsafe(32)  # FIX: generate now and keep
+            new_token = secrets.token_urlsafe(32)
             res = Reservation(
                 title_name=title_name,
                 ign=ign,
@@ -828,12 +844,12 @@ def _reserve_slot_core(
                 coordinates=(coords or "-"),
                 discord_user=who or source
             ))
-            db.session.flush()                 # FIX: assign PKs/attrs without expiring
-            cancel_token_value = new_token     # FIX: snapshot before commit
+            db.session.flush()
+            cancel_token_value = new_token
             db.session.commit()
 
     # Build a public cancel link using the captured token
-    manage_url = build_public_url(f"/cancel/{cancel_token_value}") if cancel_token_value else None  # FIX
+    manage_url = build_public_url(f"/cancel/{cancel_token_value}") if cancel_token_value else None
 
     # ---- Legacy JSON schedule mirror (kept as-is) ----
     with state_lock:
@@ -860,15 +876,6 @@ def _reserve_slot_core(
         pass
 
     # ---- Airtable (optional) ----
-    try:
-        airtable_upsert("reservation", {
-            "Title": title_name, "IGN": ign, "Coordinates": (coords or "-"),
-            "SlotStartUTC": slot_dt, "SlotEndUTC": None,
-            "Source": source, "DiscordUser": who or source,
-        })
-    except Exception:
-        pass
-
     try:
         airtable_upsert("reservation", {
             "Title": title_name, "IGN": ign, "Coordinates": (coords or "-"),
@@ -1002,7 +1009,7 @@ async def titles_reserve(
 async def titles_release(interaction: discord.Interaction, title: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
     ok = await asyncio.to_thread(_release_title_blocking, title)
-    if ok and airtable_upsert:
+    if ok:
         await asyncio.to_thread(airtable_upsert, "release", {
             "Title": title, "Source": "Discord", "DiscordUser": str(interaction.user)
         })
@@ -1117,7 +1124,7 @@ class TitleCog(commands.Cog, name="TitleManager"):
             return
 
         now = now_utc()
-        expiry_date_iso = None if title_name == "Guardian of Harmony" else (now + timedelta(hours=db_get_shift_hours())).isoformat()
+        expiry_date_iso = None if title_name == "Guardian of Harmony" else (now + timedelta(hours=_safe_shift_hours())).isoformat()
         with state_lock:
             state['titles'][title_name].update({
                 'holder': {'name': ign, 'coords': '-', 'discord_id': ctx.author.id},
@@ -1155,14 +1162,14 @@ register_routes(
     deps=dict(
         ORDERED_TITLES=ORDERED_TITLES, TITLES_CATALOG=TITLES_CATALOG,
         REQUESTABLE=REQUESTABLE, ADMIN_PIN=ADMIN_PIN,
-        ICON_FILES=ICON_FILES,  # <-- add this
-        state=state, save_state=save_state, 
+        ICON_FILES=ICON_FILES,
+        state=state, save_state=save_state_async,  # <<< async wrapper
         log_to_csv=log_to_csv,
         log_action=log_action,
         parse_iso_utc=parse_iso_utc, now_utc=now_utc,
         iso_slot_key_naive=iso_slot_key_naive,
         title_is_vacant_now=title_is_vacant_now,
-        get_shift_hours=db_get_shift_hours,
+        get_shift_hours=_safe_shift_hours,         # <<< safe DB wrapper
         bot=bot,
         state_lock=state_lock,
         send_webhook_notification=send_webhook_notification,
@@ -1189,7 +1196,7 @@ register_admin(
     app,
     deps=dict(
         ADMIN_PIN=ADMIN_PIN,
-        get_shift_hours=db_get_shift_hours,
+        get_shift_hours=_safe_shift_hours,        # <<< safe DB wrapper
         db_set_shift_hours=db_set_shift_hours,
         send_webhook_notification=send_webhook_notification,
         SERVER_CONFIGS=SERVER_CONFIGS,  # pass-by-reference cache

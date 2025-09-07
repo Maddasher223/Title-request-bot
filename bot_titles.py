@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 # ========= CONFIG (edit these) =========
-DASHBOARD_BASE_URL = os.getenv("DASHBOARD_BASE_URL", "https://your-app.example.com")  # no trailing slash
+DASHBOARD_BASE_URL = (os.getenv("DASHBOARD_BASE_URL") or "").rstrip("/")  # normalize; allow unset
 BOOK_SLOT_PATH     = "/book-slot"  # existing Flask route (form post)
 
 # Optional read-only JSON endpoints. If you don’t have them yet, leave blank.
@@ -61,17 +61,16 @@ def _is_valid_time_utc(s: str) -> bool:
 
 
 def _headers():
-    return {"User-Agent": "title-bot/1.0 (+discord)"}  # helpful for server logs
+    return {"User-Agent": "title-bot/1.1 (+discord)"}  # helpful for server logs
 
 
 async def _fetch_json(session: aiohttp.ClientSession, base: str, path: str) -> Optional[object]:
-    if not path:
+    if not path or not base:
         return None
     url = f"{base}{path}"
     try:
         async with session.get(url, timeout=10, headers=_headers()) as resp:
             if resp.status == 200:
-                # Guard bad JSON
                 try:
                     return await resp.json()
                 except Exception:
@@ -109,7 +108,7 @@ class TitlesGroup(app_commands.Group):
     @app_commands.describe(
         title="Which title to reserve",
         ign="Your in-game name",
-        coords="Outpost coordinates in X:Y (e.g. 123:456)",
+        coords="Outpost coordinates in X:Y (e.g. 123:456). Leave blank or '-' if unknown.",
         date_utc="Date (UTC) in YYYY-MM-DD",
         time_utc="Time (UTC) in HH:MM (00:00, 12:00)",
     )
@@ -119,11 +118,27 @@ class TitlesGroup(app_commands.Group):
         interaction: discord.Interaction,
         title: str,
         ign: str,
-        coords: str,
+        coords: Optional[str],
         date_utc: str,
         time_utc: str,
     ):
         await interaction.response.defer(ephemeral=True, thinking=True)
+
+        if not DASHBOARD_BASE_URL:
+            return await interaction.followup.send(
+                "❌ Server is not configured. Ask an admin to set `DASHBOARD_BASE_URL` on the bot.",
+                ephemeral=True,
+            )
+
+        # Normalize inputs
+        title = (title or "").strip()
+        ign = (ign or "").strip()
+        coords_raw = (coords or "").strip()
+        # Web form treats coords as optional. Accept '', '-' or X:Y. Convert blank -> '-'
+        if not coords_raw or coords_raw == "-":
+            coords_norm = "-"
+        else:
+            coords_norm = coords_raw
 
         async with aiohttp.ClientSession() as session:
             requestable = await _get_requestable(session)
@@ -131,10 +146,10 @@ class TitlesGroup(app_commands.Group):
         errors = []
         if title not in requestable:
             errors.append("**title** is not requestable.")
-        if not ign.strip():
+        if not ign:
             errors.append("**ign** is required.")
-        if not COORDS_RE.match(coords or ""):
-            errors.append("**coords** must look like `123:456`.")
+        if coords_norm != "-" and not COORDS_RE.match(coords_norm):
+            errors.append("**coords** must look like `123:456` (or use `-`).")
         if not _is_valid_date_utc(date_utc or ""):
             errors.append("**date** must be `YYYY-MM-DD` (UTC).")
         if not _is_valid_time_utc(time_utc or ""):
@@ -156,12 +171,13 @@ class TitlesGroup(app_commands.Group):
             return await interaction.followup.send("I couldn't submit that:\n• " + "\n• ".join(errors), ephemeral=True)
 
         # POST to your existing Flask form endpoint
-        form = {"title": title, "ign": ign.strip(), "coords": coords.strip(), "date": date_utc, "time": time_utc}
+        form = {"title": title, "ign": ign, "coords": coords_norm, "date": date_utc, "time": time_utc}
         url = f"{DASHBOARD_BASE_URL}{BOOK_SLOT_PATH}"
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=form, allow_redirects=False, headers=_headers()) as resp:
+                async with session.post(url, data=form, allow_redirects=False, headers=_headers(), timeout=12) as resp:
+                    # Treat 2xx and 3xx as success since Flask redirects after flash
                     if 200 <= resp.status < 400:
                         return await interaction.followup.send(
                             f"✅ Reserved **{title}** for **{ign}** at **{date_utc} {time_utc} UTC**.\n"
@@ -248,12 +264,12 @@ class TitlesGroup(app_commands.Group):
         await interaction.response.defer(ephemeral=True)
         msg = (
             "**Commands**\n"
-            "• `/titles reserve title:<pick> ign:<name> coords:<X:Y> date_utc:<YYYY-MM-DD> time_utc:<HH:MM>` — book a slot\n"
+            "• `/titles reserve title:<pick> ign:<name> coords:<X:Y or -> date_utc:<YYYY-MM-DD> time_utc:<HH:MM>` — book a slot\n"
             "• `/titles list` — see requestable titles\n"
             "• `/titles timeguide time_utc:<HH:MM> [date_utc:<YYYY-MM-DD>]` — quick conversions\n"
             "\n"
             "All scheduling is in **UTC** (dashboard uses the same).\n"
-            f"Dashboard: {DASHBOARD_BASE_URL}\n"
+            f"Dashboard: {DASHBOARD_BASE_URL or '(not configured)'}\n"
         )
         await interaction.followup.send(msg, ephemeral=True)
 
@@ -313,6 +329,5 @@ class MyBot(commands.Bot):
 
 
 # If running standalone:
-# import os
 # bot = MyBot()
 # bot.run(os.getenv("DISCORD_TOKEN"))

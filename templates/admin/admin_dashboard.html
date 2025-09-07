@@ -12,22 +12,11 @@
   <style>
     /* --- Base Styles & Variables --- */
 :root{
-    /* Your requested palette (Water Tribe flavored) */
-    --bg:#0f141a;                /* deep midnight blue */
-    --card:#111821;              /* card surface */
-    --alt:#0c1218;               /* alt surface */
-    --border:#2a3a49;            /* cool steel-blue border */
-    --text:#e7edf4;              /* primary text */
-    --muted:#9cb0c3;             /* muted text */
-    --bright:#ffffff;            /* bright accents */
-    --primary:#3d7ea6;           /* buttons/links */
-    --primary-hover:#336f93;     /* hover state */
-    --ring:rgba(61,126,166,.35); /* focus ring */
-    --danger:#d44a3a;            /* error */
-    --success:#46a490;           /* success */
-    --shadow:0 10px 40px rgba(0,0,0,.5);
+    --bg:#0f141a; --card:#111821; --alt:#0c1218; --border:#2a3a49;
+    --text:#e7edf4; --muted:#9cb0c3; --bright:#ffffff;
+    --primary:#3d7ea6; --primary-hover:#336f93; --ring:rgba(61,126,166,.35);
+    --danger:#d44a3a; --success:#46a490; --shadow:0 10px 40px rgba(0,0,0,.5);
 
-    /* Backwards-compat aliases so existing selectors keep working */
     --parchment-dark: var(--bg);
     --parchment-light: var(--card);
     --ink-text: var(--text);
@@ -35,16 +24,14 @@
     --ink-bright: var(--bright);
     --brush-stroke-border: var(--border);
 
-    /* Accents & component tokens aligned to new scheme */
     --water-tribe-blue: var(--primary);
-    --harmony-gold:#b7d2e6;      /* soft silver-blue for Harmony */
-    --generic-gold:#9cc4db;      /* neutral edge for non-nation titles */
+    --harmony-gold:#b7d2e6;
+    --generic-gold:#9cc4db;
     --fire-nation-red: var(--danger);
     --earth-kingdom-green:#6aa05d;
     --air-nomad-grey:#a0a09e;
 
-    /* Controls */
-    --focus-gold:#a7c7df;        /* cool highlight for links/inputs */
+    --focus-gold:#a7c7df;
     --button-gold: var(--primary);
     --button-gold-hover: var(--primary-hover);
   }
@@ -185,23 +172,26 @@
     <p class="muted">Welcome, Guardian. This is the central control panel for managing titles, reservations, and Discord server settings.</p>
 
     {% for category, message in get_flashed_messages(with_categories=True) %}
-      <div class="flash {{ category|e }}">{{ message }}</div>
+      <div class="flash {{ category|e }}" role="alert" aria-live="polite">{{ message }}</div>
     {% endfor %}
 
     <div class="grid">
       <div class="cards-3" role="region" aria-label="System Stats">
-        <div class="stat"><div class="label">Configured Titles</div><div class="value">{{ stats.title_count }}</div></div>
-        <div class="stat"><div class="label">Upcoming Reservations</div><div class="value">{{ stats.reservation_count }}</div></div>
-        <div class="stat"><div class="label">Connected Servers</div><div class="value">{{ stats.server_count }}</div></div>
+        <div class="stat"><div class="label">Configured Titles</div><div class="value">{{ (stats.title_count if stats is defined else 0) | default(0, true) }}</div></div>
+        <div class="stat"><div class="label">Total Reservations</div><div class="value">{{ (stats.reservation_count if stats is defined else 0) | default(0, true) }}</div></div>
+        <div class="stat"><div class="label">Connected Servers</div><div class="value">{{ (stats.server_count if stats is defined else 0) | default(0, true) }}</div></div>
       </div>
       <div class="row">
         <section class="card" aria-labelledby="shift-heading">
           <h2 id="shift-heading">Shift Hours</h2>
-          <p class="muted">This sets the standard duration for all reservable titles. A 12-hour shift means a reservation at 00:00 UTC will expire at 12:00 UTC.<br>Current value: <strong>{{ shift }}</strong> hour(s).</p>
+          <p class="muted">
+            This sets the standard duration for all reservable titles. A 12-hour shift means a reservation at 00:00 UTC will expire at 12:00 UTC.<br>
+            Current value: <strong>{{ shift | default(12, true) }}</strong> hour(s).
+          </p>
           <form class="inline" action="{{ url_for('admin.set_shift') }}" method="POST" autocomplete="off">
             <div>
               <label for="hours" class="muted">Set New Duration (hours)</label>
-              <input id="hours" name="hours" type="number" min="1" max="72" step="1" placeholder="e.g. 12" value="{{ shift }}" required inputmode="numeric" />
+              <input id="hours" name="hours" type="number" min="1" max="72" step="1" placeholder="e.g. 12" value="{{ shift | default(12, true) }}" required inputmode="numeric" />
             </div>
             <button type="submit">Update</button>
           </form>

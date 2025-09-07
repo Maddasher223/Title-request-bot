@@ -36,7 +36,7 @@ def register_routes(app, deps):
     title_is_vacant_now = deps['title_is_vacant_now']
     get_shift_hours = deps['get_shift_hours']
 
-    bot            = deps['bot']
+    bot            = deps.get('bot')
     db_helpers     = deps.get('db_helpers', {})
     # Optional helpers (no-ops if absent)
     set_shift_hours = deps.get('set_shift_hours') or db_helpers.get('set_shift_hours') or (lambda *_: None)
@@ -50,10 +50,34 @@ def register_routes(app, deps):
     UTC = timezone.utc
 
     # ----- Utilities -----
+    class _ImmediateResult:
+        """Tiny wrapper so callers can still call .result(timeout=...) even when we ran sync."""
+        def __init__(self, value):
+            self._value = value
+        def result(self, timeout=None):
+            return self._value
+
     def schedule_on_bot_loop(coro):
-        """Run an async coroutine safely on the Discord bot loop from Flask thread and return its Future."""
+        """
+        Run an async coroutine safely on the Discord bot loop from Flask thread.
+        If the bot/loop isn't available or running, fall back to asyncio.run(),
+        returning an object with .result() for compatibility.
+        """
         try:
-            return asyncio.run_coroutine_threadsafe(coro, bot.loop)
+            if bot and getattr(bot, "loop", None) and getattr(bot.loop, "is_running", lambda: False)():
+                return asyncio.run_coroutine_threadsafe(coro, bot.loop)
+            # Fallback: run synchronously
+            return _ImmediateResult(asyncio.run(coro))
+        except RuntimeError:
+            # If somehow we're already in a loop, create a new task runner
+            try:
+                loop = asyncio.new_event_loop()
+                try:
+                    return _ImmediateResult(loop.run_until_complete(coro))
+                finally:
+                    loop.close()
+            except Exception:
+                return None
         except Exception:
             return None
 
@@ -61,12 +85,31 @@ def register_routes(app, deps):
         return bool(session.get("is_admin"))
 
     def _reservation_to_ign(reservation):
-        return reservation.get('ign') if isinstance(reservation, dict) else str(reservation)
+        return reservation.get('ign') if isinstance(reservation, dict) else (str(reservation) if reservation is not None else "-")
 
     def _reservation_to_coords(reservation):
         if isinstance(reservation, dict):
             return reservation.get('coords', '-')
         return '-'
+
+    def _safe_parse_iso(k: str):
+        """Parse ISO robustly; always return UTC-aware datetime or None."""
+        try:
+            dt = parse_iso_utc(k)
+            if dt is not None:
+                # ensure tz-aware
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                return dt
+        except Exception:
+            pass
+        try:
+            dt = datetime.fromisoformat(k)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt
+        except Exception:
+            return None
 
     def _compute_next_reservation_for_title(title_name: str):
         """Return (slot_iso, ign) for the earliest future reservation for a title."""
@@ -74,8 +117,8 @@ def register_routes(app, deps):
         future = []
         now = now_utc()
         for k, v in sched.items():
-            dt = parse_iso_utc(k) or datetime.fromisoformat(k).replace(tzinfo=UTC)
-            if dt >= now:
+            dt = _safe_parse_iso(k)
+            if dt and dt >= now:
                 future.append((dt, v))
         if not future:
             return None, None
@@ -90,8 +133,8 @@ def register_routes(app, deps):
         items = []
         for title_name, sched in state.get('schedules', {}).items():
             for k, v in sched.items():
-                dt = parse_iso_utc(k) or datetime.fromisoformat(k).replace(tzinfo=UTC)
-                if now <= dt <= cutoff:
+                dt = _safe_parse_iso(k)
+                if dt and (now <= dt <= cutoff):
                     items.append({
                         "title": title_name,
                         "slot_iso": dt.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -133,6 +176,7 @@ def register_routes(app, deps):
         titles_data = []
         titles_dict = state.get('titles', {})
         for title_name in ORDERED_TITLES:
+            cat = TITLES_CATALOG.get(title_name, {})
             data = titles_dict.get(title_name, {})
             holder_info = "None"
             if data.get('holder'):
@@ -142,9 +186,12 @@ def register_routes(app, deps):
             remaining = "—"
             if data.get('expiry_date'):
                 try:
-                    expiry = parse_iso_utc(data['expiry_date'])
-                    delta = expiry - now_utc()
-                    remaining = str(timedelta(seconds=int(delta.total_seconds()))) if delta.total_seconds() > 0 else "Expired"
+                    expiry = _safe_parse_iso(data['expiry_date'])
+                    if expiry:
+                        delta = expiry - now_utc()
+                        remaining = str(timedelta(seconds=int(delta.total_seconds()))) if delta.total_seconds() > 0 else "Expired"
+                    else:
+                        remaining = "Invalid"
                 except Exception:
                     remaining = "Invalid"
 
@@ -152,14 +199,14 @@ def register_routes(app, deps):
             next_res_text = f"{next_slot_key} by {next_ign}" if (next_slot_key and next_ign) else "—"
 
             # ICON_FILES already contains paths like "/static/icons/..png"
-            icon_path = ICON_FILES.get(title_name) or TITLES_CATALOG[title_name].get('image')
+            icon_path = ICON_FILES.get(title_name) or cat.get('image') or ""
 
             titles_data.append({
                 'name': title_name,
                 'holder': holder_info,
                 'expires_in': remaining,
                 'icon': icon_path,
-                'buffs': TITLES_CATALOG[title_name]['effects'],
+                'buffs': cat.get('effects', []),
                 'next_reserved': next_res_text
             })
 
@@ -171,17 +218,22 @@ def register_routes(app, deps):
         requestable_titles = REQUESTABLE
         cfg = state.get('config', {})
 
-        # Template expects `schedule_lookup`-style nested dict? Provide a simple one.
         # { date_iso: { "HH:MM": { title_name: {"ign":..,"coords":..} } } }
         schedule_grid = {}
         for title_name, sched in schedules.items():
             for k, v in sched.items():
-                dt = parse_iso_utc(k) or datetime.fromisoformat(k).replace(tzinfo=UTC)
+                dt = _safe_parse_iso(k)
+                if not dt:
+                    continue
                 dkey = dt.date().isoformat()
                 tkey = dt.strftime("%H:%M")
                 day_map = schedule_grid.setdefault(dkey, {})
                 time_map = day_map.setdefault(tkey, {})
-                time_map[title_name] = v
+                # Always store as dict to simplify template logic
+                if isinstance(v, dict):
+                    time_map[title_name] = {"ign": v.get("ign", "-"), "coords": v.get("coords", "-")}
+                else:
+                    time_map[title_name] = {"ign": str(v), "coords": "-"}
 
         return render_template(
             'dashboard.html',
@@ -199,10 +251,13 @@ def register_routes(app, deps):
     def view_log():
         csv_path = os.path.join(os.path.dirname(__file__), "data", "requests.csv")
         log_data = []
-        if os.path.exists(csv_path):
-            with open(csv_path, 'r', newline='', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                log_data = list(reader)
+        try:
+            if os.path.exists(csv_path):
+                with open(csv_path, 'r', newline='', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    log_data = list(reader)
+        except Exception:
+            log_data = []
         return render_template('log.html', logs=reversed(log_data))
 
     @app.route("/book-slot", methods=['POST'])
@@ -278,7 +333,10 @@ def register_routes(app, deps):
             "coordinates": coords or "-",
             "discord_user": "Web Form"
         }
-        log_to_csv(csv_data)
+        try:
+            log_to_csv(csv_data)
+        except Exception:
+            pass
         try:
             send_webhook_notification(csv_data, reminder=False)
         except Exception:
@@ -329,7 +387,7 @@ def register_routes(app, deps):
         for title_name in ORDERED_TITLES:
             t = titles_dict.get(title_name, {})
             if t and t.get("holder"):
-                exp = parse_iso_utc(t["expiry_date"]) if t.get("expiry_date") else None
+                exp = _safe_parse_iso(t.get("expiry_date")) if t.get("expiry_date") else None
                 active.append({
                     "title": title_name,
                     "holder": t["holder"].get("name", "-"),
@@ -348,10 +406,13 @@ def register_routes(app, deps):
         # Recent CSV logs
         csv_path = os.path.join(os.path.dirname(__file__), "data", "requests.csv")
         logs = []
-        if os.path.exists(csv_path):
-            with open(csv_path, 'r', newline='', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                logs = list(reader)[-200:]
+        try:
+            if os.path.exists(csv_path):
+                with open(csv_path, 'r', newline='', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    logs = list(reader)[-200:]
+        except Exception:
+            logs = []
 
         cfg = state.get('config', {})
         current_settings = {
@@ -425,7 +486,10 @@ def register_routes(app, deps):
             # remove approval flag if present
             ap = state.get("approvals", {}).get(title, {})
             if slot in ap:
-                del ap[slot]
+                try:
+                    del ap[slot]
+                except Exception:
+                    pass
             await save_state()
             return True, reserved
 
@@ -587,7 +651,10 @@ def register_routes(app, deps):
             # approval cleanup (not carried to new slot by default)
             old_ap = state.get("approvals", {}).setdefault(title, {})
             if slot in old_ap:
-                del old_ap[slot]
+                try:
+                    del old_ap[slot]
+                except Exception:
+                    pass
             await save_state()
             return True, reserved
 
