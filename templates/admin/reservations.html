@@ -6,78 +6,127 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="color-scheme" content="dark" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <!-- Match site system: Caudex + Inter -->
+  <link href="https://fonts.googleapis.com/css2?family=Caudex:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     :root{
-      --bg:#121417; --card:#1d2024; --alt:#0f1114; --border:#3e444c;
-      --text:#c4c9d4; --muted:#8e9297; --bright:#fff;
-      --primary:#c39a3f; --primary-hover:#af8b39; --ring:rgba(195,154,63,.25);
-      --danger:#f04747; --danger-hover:#d83c3e; --success:#43b581; --shadow:0 10px 40px rgba(0,0,0,.5);
+      /* Water-Tribe blues (matches dashboard/ops/login) */
+      --bg:#0f141a; --card:#111821; --alt:#0c1218; --border:#2a3a49;
+      --text:#e7edf4; --muted:#9cb0c3; --bright:#ffffff;
+      --primary:#3d7ea6; --primary-hover:#336f93; --ring:rgba(61,126,166,.35);
+      --danger:#d44a3a; --danger-hover:#bf3a2f; --success:#46a490;
+      --shadow:0 10px 40px rgba(0,0,0,.5);
     }
     *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 'Inter',system-ui,sans-serif;padding:24px}
+    body{
+      margin:0;background:var(--bg);color:var(--text);
+      font:16px/1.55 'Inter',system-ui,sans-serif;padding:24px
+    }
     .container{max-width:1200px;margin:0 auto;display:grid;gap:18px}
 
-    h1{margin:0;font:700 1.8rem 'Cinzel',serif;color:var(--bright)}
+    h1{margin:0;font:700 1.8rem 'Caudex',serif;color:var(--bright)}
     a{color:var(--primary);text-decoration:none;font-weight:700}
     a:hover{text-decoration:underline}
 
-    .header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:12px}
+    .header{
+      display:flex;justify-content:space-between;align-items:center;
+      border-bottom:1px solid var(--border);padding-bottom:12px;position:relative
+    }
 
-    .flash{padding:12px 14px;border-radius:10px;border:1px solid var(--primary); background:rgba(195,154,63,.12);color:var(--primary);font-weight:700}
-    .flash.error{border-color:var(--danger);background:rgba(240,71,71,.12);color:#fff}
-    .flash.success{border-color:var(--success);background:rgba(67,181,129,.12);color:#0e1a0f}
+    /* Flash messages (accessible) */
+    .flash{
+      padding:12px 14px;border-radius:10px;border:1px solid var(--primary);
+      background:rgba(61,126,166,.14);color:var(--bright);font-weight:700
+    }
+    .flash.error{border-color:var(--danger);background:rgba(212,74,58,.16);color:#fff}
+    .flash.success{border-color:var(--success);background:rgba(70,164,144,.16);color:#e9fbf6}
 
-    .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;box-shadow:var(--shadow);border-top:3px solid var(--primary)}
+    .card{
+      background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;
+      box-shadow:var(--shadow);border-top:3px solid var(--primary)
+    }
 
-    button, .btn { padding:10px 14px; border:0; border-radius:10px; background:var(--primary); color:#0a0b0d; font-weight:800; cursor:pointer; font-family:'Cinzel',serif; display:inline-flex; align-items:center; justify-content:center; gap:8px; text-decoration:none; }
-    button:hover, .btn:hover { background:var(--primary-hover); }
+    button, .btn {
+      padding:10px 14px;border:0;border-radius:10px;background:var(--primary);color:#0a0f14;
+      font-weight:800;cursor:pointer;font-family:'Caudex',serif;
+      display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;
+      transition:background-color .15s ease, transform .15s ease;
+    }
+    button:hover, .btn:hover { background:var(--primary-hover); transform:translateY(-1px) }
     .btn-small{ padding:8px 10px; font-size: 0.9rem; }
     .btn-danger { background-color: var(--danger); color: #fff; }
     .btn-danger:hover { background-color: var(--danger-hover); }
     .btn-secondary { background: var(--alt); border: 1px solid var(--border); color: var(--text); }
     .btn-secondary:hover { border-color: var(--primary); color: var(--bright); }
 
-    .card-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
-    .search-form { display: flex; gap: 8px; flex-grow: 1; min-width: 280px; }
-    .search-form input { flex-grow: 1; min-width: 200px; padding:10px 12px; border-radius:10px; border:1px solid var(--border); background:var(--alt); color:var(--bright); }
+    .card-header {
+      display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center;
+      gap:16px; padding-bottom:16px; border-bottom:1px solid var(--border); margin-bottom:16px;
+    }
+    .search-form { display:flex; gap:8px; flex-grow:1; min-width:280px; }
+    .search-form input {
+      flex-grow:1; min-width:200px; padding:10px 12px; border-radius:10px;
+      border:1px solid var(--border); background:var(--alt); color:var(--bright);
+    }
     .search-form input:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 4px var(--ring); }
-
     .toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:10px 0 6px}
     .muted{color:var(--muted)}
 
-    .table-wrapper { overflow-x: auto; }
+    .table-wrapper { overflow-x:auto }
     table{width:100%;border-collapse:collapse}
-    th,td{padding:12px 14px;border-bottom:1px solid var(--border);text-align:left; white-space:nowrap;}
-    th{color:var(--muted);font:700 .85rem 'Cinzel',serif;letter-spacing:.03em;text-transform:uppercase}
-    tbody tr:nth-of-type(odd) { background-color: var(--alt); }
+    th,td{padding:12px 14px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap}
+    th{
+      color:var(--muted);font:700 .85rem 'Caudex',serif;letter-spacing:.03em;text-transform:uppercase
+    }
+    tbody tr:nth-of-type(odd){ background-color:var(--alt) }
+    tbody tr{ transition: background-color .15s ease }
+    tbody tr:hover{ background-color:rgba(61,126,166,.12) }
     code{background:var(--alt);padding:3px 6px;border-radius:8px;border:1px solid var(--border)}
 
-    .pagination{display:flex;gap:6px;align-items:center;justify-content:center;margin-top:20px;flex-wrap:wrap}
-    .pagination a,.pagination span{padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--alt);color:var(--bright);text-decoration:none}
-    .pagination .active{border-color:var(--primary);background:var(--primary);color:var(--bg);box-shadow:0 0 0 3px var(--ring)}
+    .pagination{
+      display:flex;gap:6px;align-items:center;justify-content:center;margin-top:20px;flex-wrap:wrap
+    }
+    .pagination a,.pagination span{
+      padding:8px 12px;border-radius:8px;border:1px solid var(--border);
+      background:var(--alt);color:var(--bright);text-decoration:none
+    }
+    .pagination .active{
+      border-color:var(--primary);background:var(--primary);color:var(--bg);box-shadow:0 0 0 3px var(--ring)
+    }
     .pagination .disabled{color:var(--muted); background: transparent;}
 
-    .nav { display: flex; gap: 12px; }
-    .menu-toggle { display: none; }
+    /* Mobile nav (consistent with other pages) */
+    .nav { display:flex; gap:12px; }
+    .menu-toggle { display:none; }
     @media (max-width: 992px) {
-      .nav-links { display: none; position: absolute; top: 85px; right: 24px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 12px; flex-direction: column; gap: 0; z-index: 100; }
-      .nav-links.is-open { display: flex; }
-      .nav-links a { padding: 12px 16px; border-radius: 8px; width: 200px; }
-      .nav-links a:hover { background: var(--alt); text-decoration: none; }
-      .menu-toggle { display: block; background: none; border: none; padding: 8px; cursor: pointer; color: var(--muted); }
-      .menu-toggle:hover { color: var(--bright); }
-      .menu-toggle svg { width: 28px; height: 28px; }
+      .nav-links{
+        display:none; position:absolute; top:85px; right:24px; background:var(--card);
+        border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow);
+        padding:12px; flex-direction:column; gap:0; z-index:1000; width:220px;
+      }
+      .nav-links.is-open { display:flex; }
+      .nav-links a { padding:12px 16px; border-radius:8px; }
+      .nav-links a:hover { background:var(--alt); text-decoration:none; }
+      .menu-toggle{ display:block; background:none; border:none; padding:8px; cursor:pointer; color:var(--muted) }
+      .menu-toggle:hover{ color:var(--bright) }
+      .menu-toggle svg{ width:28px; height:28px }
     }
 
     /* Confirmation Modal */
-    .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; opacity: 0; visibility: hidden; transition: all .3s; }
-    .modal-overlay.is-visible { opacity: 1; visibility: visible; }
-    .modal-dialog { background: var(--card); border-radius: 14px; padding: 24px; border-top: 3px solid var(--danger); max-width: 450px; width: 90%; transform: translateY(20px); transition: all .3s; }
-    .modal-overlay.is-visible .modal-dialog { transform: translateY(0); }
-    .modal-dialog h3 { margin: 0 0 10px; font-family: 'Cinzel', serif; color: var(--bright); }
-    .modal-dialog p { margin: 0; }
-    .modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; }
+    .modal-overlay {
+      position:fixed; inset:0; background:rgba(0,0,0,0.7);
+      display:flex; align-items:center; justify-content:center; z-index:1000;
+      opacity:0; visibility:hidden; transition:opacity .25s ease, visibility .25s ease;
+    }
+    .modal-overlay.is-visible { opacity:1; visibility:visible; }
+    .modal-dialog{
+      background:var(--card); border-radius:14px; padding:24px; border-top:3px solid var(--danger);
+      max-width:480px; width:90%; transform:translateY(14px); transition:transform .25s ease;
+    }
+    .modal-overlay.is-visible .modal-dialog { transform:translateY(0) }
+    .modal-dialog h3{ margin:0 0 10px; font-family:'Caudex',serif; color:var(--bright) }
+    .modal-dialog p{ margin:0 }
+    .modal-actions{ display:flex; gap:12px; justify-content:flex-end; margin-top:24px }
   </style>
 </head>
 <body>
@@ -98,7 +147,7 @@
     </div>
 
     {% for category, message in get_flashed_messages(with_categories=True) %}
-      <div class="flash {{ category }}">{{ message }}</div>
+      <div class="flash {{ category|e }}" role="status" aria-live="polite">{{ message }}</div>
     {% endfor %}
 
     <div class="card">
@@ -176,7 +225,7 @@
                 </td>
               </tr>
             {% else %}
-              <tr><td colspan="5" style="text-align:center; padding: 24px;" class="muted">No reservations found.</td></tr>
+              <tr><td colspan="5" style="text-align:center; padding:24px;" class="muted">No reservations found.</td></tr>
             {% endfor %}
           </tbody>
         </table>
@@ -205,9 +254,10 @@
     </div>
   </div>
 
+  <!-- Confirmation Modal -->
   <div class="modal-overlay" id="cancel-modal" onclick="closeCancelModal()">
-    <div class="modal-dialog" onclick="event.stopPropagation()">
-      <h3>Confirm Cancellation</h3>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="cancel-title" onclick="event.stopPropagation()">
+      <h3 id="cancel-title">Confirm Cancellation</h3>
       <p id="modal-text">Are you sure you want to cancel this reservation?</p>
       <div class="modal-actions">
         <button type="button" class="btn btn-secondary" onclick="closeCancelModal()">Go Back</button>
@@ -222,8 +272,8 @@
   </div>
 
   <script>
-    // Mobile nav
-    document.addEventListener('DOMContentLoaded', function () {
+    // Mobile nav + click-outside close
+    (function(){
       const menuToggle = document.getElementById('menu-toggle');
       const navLinks = document.getElementById('nav-links');
       if (menuToggle && navLinks) {
@@ -232,33 +282,68 @@
           this.setAttribute('aria-expanded', (!isExpanded).toString());
           navLinks.classList.toggle('is-open');
         });
+        document.addEventListener('click', function(ev){
+          const inside = navLinks.contains(ev.target) || menuToggle.contains(ev.target);
+          if(!inside && navLinks.classList.contains('is-open')){
+            navLinks.classList.remove('is-open');
+            menuToggle.setAttribute('aria-expanded','false');
+          }
+        });
       }
-    });
+    })();
 
-    // Modal
-    const cancelModal = document.getElementById('cancel-modal');
-    const modalText = document.getElementById('modal-text');
-    const modalTitle = document.getElementById('modal-title');
-    const modalDate = document.getElementById('modal-date');
-    const modalTime = document.getElementById('modal-time');
+    // Modal logic with focus trap + ESC close
+    (function(){
+      const cancelModal = document.getElementById('cancel-modal');
+      const modalText = document.getElementById('modal-text');
+      const modalTitle = document.getElementById('modal-title');
+      const modalDate = document.getElementById('modal-date');
+      const modalTime = document.getElementById('modal-time');
+      const form = document.getElementById('modal-form');
+      let lastActive = null;
 
-    function openCancelModal(button) {
-      const title = button.dataset.title;
-      const ign = button.dataset.ign;
-      const date = button.dataset.date;
-      const time = button.dataset.time;
+      window.openCancelModal = function(button){
+        const title = button.dataset.title;
+        const ign = button.dataset.ign;
+        const date = button.dataset.date;
+        const time = button.dataset.time;
 
-      modalText.innerHTML = `Are you sure you want to cancel the reservation for <strong>${ign}</strong>?<br><small>${title} at ${date} ${time} UTC</small>`;
-      modalTitle.value = title;
-      modalDate.value = date;
-      modalTime.value = time;
+        modalText.innerHTML = `Are you sure you want to cancel the reservation for <strong>${ign}</strong>?<br><small>${title} at ${date} ${time} UTC</small>`;
+        modalTitle.value = title;
+        modalDate.value = date;
+        modalTime.value = time;
 
-      cancelModal.classList.add('is-visible');
-    }
+        lastActive = button;
+        cancelModal.classList.add('is-visible');
 
-    function closeCancelModal() {
-      cancelModal.classList.remove('is-visible');
-    }
+        // move focus into modal
+        const primary = form.querySelector('button[type="submit"]');
+        (primary || form || cancelModal).focus({preventScroll:true});
+        document.addEventListener('keydown', onKey);
+      };
+
+      window.closeCancelModal = function(){
+        cancelModal.classList.remove('is-visible');
+        document.removeEventListener('keydown', onKey);
+        if (lastActive) lastActive.focus();
+      };
+
+      function onKey(e){
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          window.closeCancelModal();
+        }
+        // rudimentary focus trap
+        if (e.key === 'Tab' && cancelModal.classList.contains('is-visible')) {
+          const focusables = cancelModal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+          if (!focusables.length) return;
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      }
+    })();
   </script>
 </body>
 </html>

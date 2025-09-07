@@ -6,90 +6,95 @@
   <meta name="color-scheme" content="dark" />
   <title>Admin Login</title>
 
+  <!-- Fonts: match admin/dashboard (Caudex + Inter) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500&family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Caudex:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 
   <style>
     :root{
-      --bg-deep:#121417; --bg-dark:#1d2024; --border:#3e444c;
-      --text:#c4c9d4; --bright:#fff; --muted:#9aa0a6;
-      --primary:#c39a3f; --primary-hover:#af8b39;
-      --danger:#f04747; --ring:rgba(195,154,63,.28);
+      /* Match admin palette */
+      --bg:#0f141a; --card:#111821; --alt:#0c1218; --border:#2a3a49;
+      --text:#e7edf4; --muted:#9cb0c3; --bright:#ffffff;
+      --primary:#3d7ea6; --primary-hover:#336f93; --ring:rgba(61,126,166,.35);
+      --danger:#d44a3a; --success:#46a490;
+      --shadow:0 12px 40px rgba(0,0,0,.45);
     }
-    *{ box-sizing:border-box; }
-    html,body{ height:100%; margin:0; }
+
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0}
     body{
-      display:grid; place-items:center;
-      font-family:'Inter',system-ui,sans-serif;
-      background: radial-gradient(circle at 50% -20%, rgba(255,255,255,.05), transparent 55%), var(--bg-deep);
-      color:var(--text); padding:16px;
+      display:grid;place-items:center;
+      font:16px/1.55 'Inter',system-ui,sans-serif;
+      background:
+        radial-gradient(60rem 60rem at 50% -20%, rgba(99,140,168,.10), transparent 55%),
+        var(--bg);
+      color:var(--text);padding:16px;
     }
+
     .login-box{
-      max-width:420px; width:100%;
-      background:var(--bg-dark);
-      border:1px solid var(--border); border-radius:14px;
-      padding:28px; text-align:center;
-      box-shadow:0 12px 40px rgba(0,0,0,.45);
-      animation:fadeIn .4s ease-out forwards;
-      opacity:0; transform:translateY(12px);
+      width:100%;max-width:440px;background:var(--card);
+      border:1px solid var(--border);border-radius:14px;
+      padding:28px;text-align:center;box-shadow:var(--shadow);
+      animation:fadeIn .35s ease-out forwards;opacity:0;transform:translateY(12px)
     }
     @keyframes fadeIn{to{opacity:1;transform:translateY(0)}}
 
-    h1{margin:0 0 18px;font-family:'Cinzel',serif;font-size:26px;color:var(--bright)}
-    .flash{margin:0 0 14px;padding:12px 14px;border-radius:10px;background:var(--danger);color:#fff;font-weight:600}
+    h1{margin:0 0 18px;font:700 26px 'Caudex',serif;color:var(--bright)}
+
+    /* Flash messages (a11y + categories) */
+    .flash-list{margin:0 0 14px;padding:0;list-style:none}
+    .flash{
+      padding:12px 14px;border-radius:10px;font-weight:700;line-height:1.4;
+      border:1px solid var(--primary);background:rgba(61,126,166,.14);color:var(--bright)
+    }
+    .flash.error{border-color:var(--danger);background:rgba(212,74,58,.16)}
+    .flash.success{border-color:var(--success);background:rgba(70,164,144,.16);color:#e9fbf6}
+
     form{text-align:left}
     .field{margin-bottom:16px}
-    label{font-size:14px;font-weight:600;display:block;margin-bottom:6px}
+    label{font-size:14px;font-weight:600;display:block;margin-bottom:6px;color:var(--muted)}
 
-    input[type=password], input[type=text]{
-      width:100%;padding:14px;font-size:16px;border-radius:10px;
-      background:#1a1c20;border:1px solid var(--border);color:var(--bright);
+    .input-wrapper{position:relative;display:flex;align-items:center}
+    input[type=password],input[type=text]{
+      width:100%;padding:14px 44px 14px 14px;font-size:16px;border-radius:10px;
+      background:var(--alt);border:1px solid var(--border);color:var(--bright)
     }
     input:focus{border-color:var(--primary);box-shadow:0 0 0 4px var(--ring);outline:none}
 
-    button{
-      width:100%;padding:14px;border:none;border-radius:10px;
-      background:var(--primary);color:var(--bg-deep);
-      font-weight:700;font-size:16px;font-family:'Cinzel',serif;cursor:pointer;
-      position:relative;transition:background-color .2s;
-    }
-    button:hover{background:var(--primary-hover)}
-    button[disabled]{opacity:.7;cursor:not-allowed}
-
-    .footer{margin-top:18px;font-size:14px}
-    .footer a{color:var(--text);text-decoration:none}
-    .footer a:hover{color:var(--primary);text-decoration:underline}
-
-    /* Interactive Vault Seal */
-    .vault-seal{
-      width:70px;height:70px;margin:0 auto 18px;display:block;color:var(--primary);
-      transition:transform .3s ease-out, filter .3s ease-out;
-    }
-    .login-box:focus-within .vault-seal{transform:scale(1.05);filter:drop-shadow(0 0 12px var(--primary));}
-
-    /* Password visibility toggle */
-    .input-wrapper{position:relative;display:flex;align-items:center}
-    #pin{padding-right:50px}
     .toggle-password{
       position:absolute;right:1px;top:1px;bottom:1px;
       border:none;background:none;padding:0 12px;cursor:pointer;
-      color:var(--muted);transition:color .2s;
+      color:var(--muted);transition:color .2s
     }
     .toggle-password:hover{color:var(--bright)}
     .toggle-password svg{width:20px;height:20px}
 
-    /* Button spinner */
+    button{
+      width:100%;padding:14px;border:none;border-radius:10px;
+      background:var(--primary);color:#0c1720;
+      font-weight:800;font-size:16px;font-family:'Caudex',serif;cursor:pointer;
+      position:relative;transition:background-color .2s
+    }
+    button:hover{background:var(--primary-hover)}
+    button[disabled]{opacity:.7;cursor:not-allowed}
+
     .btn-text{transition:opacity .2s}
     .spinner{
       position:absolute;top:50%;left:50%;margin:-10px 0 0 -10px;
       width:20px;height:20px;border:2px solid rgba(255,255,255,.3);
-      border-top-color:var(--bright);border-radius:50%;
-      animation:spin .8s linear infinite;display:none;
+      border-top-color:var(--bright);border-radius:50%;animation:spin .8s linear infinite;display:none
     }
     @keyframes spin{to{transform:rotate(360deg)}}
     button.is-loading .btn-text{opacity:0}
     button.is-loading .spinner{display:block}
+
+    /* Decorative vault seal (match palette) */
+    .vault-seal{
+      width:70px;height:70px;margin:0 auto 18px;display:block;color:var(--primary);
+      transition:transform .3s ease-out, filter .3s ease-out
+    }
+    .login-box:focus-within .vault-seal{transform:scale(1.05);filter:drop-shadow(0 0 12px var(--primary))}
   </style>
 </head>
 <body>
@@ -99,33 +104,33 @@
       <circle cx="50" cy="50" r="48" stroke="currentColor" stroke-width="3" fill="none"/>
       <path d="M50 2C30 2 12 18 12 50H50V2Z" fill="#d04033"/>
       <path d="M50 98C70 98 88 82 88 50H50V98Z" fill="#5d8e9c"/>
-      <path d="M2 50C2 70 18 88 50 88V50H2Z" fill="#688a4c"/>
+      <path d="M2 50C2 70 18 88 50 88V50H2Z" fill="#6aa05d"/>
       <path d="M98 50C98 30 82 12 50 12V50H98Z" fill="#a0a09e"/>
-      <circle cx="50" cy="50" r="22" fill="var(--bg-dark)"/>
-      <path d="M50 35C45.6 35 42 38.6 42 43v14c0 4.4 3.6 8 8 8s8-3.6 8-8V43c0-4.4-3.6-8-8-8z" fill="var(--primary)"/>
+      <circle cx="50" cy="50" r="22" fill="var(--card)"/>
+      <path d="M50 35c-4.4 0-8 3.6-8 8v14c0 4.4 3.6 8 8 8s8-3.6 8-8V43c0-4.4-3.6-8-8-8Z" fill="currentColor"/>
     </svg>
 
     <h1 id="login-title">Admin Login</h1>
 
-    {# Fetch flashes once to avoid consuming them twice #}
-    {% set flashes = get_flashed_messages(with_categories=True) %}
-    {% set has_flash = flashes and flashes|length > 0 %}
-    {% if has_flash %}
-      <div id="flash-msg" class="flash" role="status" aria-live="polite">
-        {{ flashes[0][1]|e }}
-      </div>
-    {% endif %}
+    {% with messages = get_flashed_messages(with_categories=True) %}
+      {% if messages %}
+        <ul class="flash-list" aria-live="polite">
+          {% for category, message in messages %}
+            <li class="flash {{ category|e }}" role="alert">{{ message|e }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
 
     <form action="{{ url_for('admin.login', next=request.args.get('next')) }}" method="POST" autocomplete="off" novalidate>
-      {# If using Flask-WTF/CSRF: {{ form.csrf_token }} #}
+      <!-- If using CSRF, include it here -->
       <div class="field">
         <label for="pin">Password</label>
         <div class="input-wrapper">
           <input id="pin" name="pin" type="password"
                  placeholder="Enter Admin Password"
                  required inputmode="text" autocomplete="current-password"
-                 autocorrect="off" autocapitalize="off" spellcheck="false" autofocus
-                 {% if has_flash %}aria-invalid="true" aria-describedby="flash-msg"{% endif %} />
+                 autocorrect="off" autocapitalize="off" spellcheck="false" autofocus />
           <button type="button" class="toggle-password" id="toggle-password" aria-label="Show password as plain text.">
             <svg id="eye-open" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.432 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
             <svg id="eye-closed" style="display:none" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.243 4.243l-4.243-4.243" /></svg>
@@ -135,12 +140,12 @@
 
       <button id="login-btn" type="submit">
         <span class="btn-text">Sign In</span>
-        <div class="spinner"></div>
+        <div class="spinner" aria-hidden="true"></div>
       </button>
     </form>
 
-    <div class="footer">
-      <a href="{{ url_for('dashboard') }}">← Back to Dashboard</a>
+    <div class="footer" style="margin-top:18px;font-size:14px">
+      <a href="{{ url_for('dashboard') }}" style="color:var(--muted);text-decoration:none">← Back to Dashboard</a>
     </div>
   </div>
 
@@ -162,7 +167,7 @@
       }
 
       // Password visibility toggle
-      if (toggleBtn && passwordInput) {
+      if (toggleBtn && passwordInput && eyeOpen && eyeClosed) {
         toggleBtn.addEventListener('click', function () {
           const isPassword = passwordInput.type === 'password';
           passwordInput.type = isPassword ? 'text' : 'password';

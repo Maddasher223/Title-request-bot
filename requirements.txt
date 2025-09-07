@@ -13,3 +13,5 @@ requests==2.32.3
 # Environment & Airtable
 python-dotenv==1.0.1
 pyairtable==2.3.3
+
+psycopg2-binary==2.9.9
