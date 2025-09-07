@@ -3,47 +3,54 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Server 1021 Temple Title Request Dashboard</title>
+  <title>Server 1041 Temple Title Request Dashboard</title>
+
+  <!-- Fonts: Caudex (headings) + Inter (body) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Caudex:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
   <style>
     :root {
-      --parchment-dark:#181a1f; --parchment-light:#181a1f; --ink-text:#e2e0dd;
-      --ink-muted:#a19a92; --ink-bright:#fff; --brush-stroke-border:#5a524c;
-      --shadow:0 6px 20px rgba(0,0,0,.35);
+      /* Current admin palette */
+      --bg:#0f141a; --card:#111821; --alt:#0c1218; --border:#2a3a49;
+      --ink-text:#e7edf4; --ink-muted:#9cb0c3; --ink-bright:#ffffff;
+      --shadow:0 12px 40px rgba(0,0,0,.45);
+      --primary:#3d7ea6; --primary-hover:#336f93; --ring:rgba(61,126,166,.35);
+
+      /* title color accents preserved */
       --fire-nation-red:#d04033; --water-tribe-blue:#5d8e9c;
-      --earth-kingdom-green:#688a4c; --air-nomad-grey:#a0a09e;
-      --harmony-gold:#c39a3f; --generic-gold:#e8b351;
-      --focus-gold:#e8b351; --button-gold:#e8b351; --button-gold-hover:#d4a24a;
+      --earth-kingdom-green:#688a4c; --air-nomad-grey:#a0a09e; --harmony-gold:#c39a3f;
+
+      /* mapped from old gold theme → primary */
+      --focus:#3d7ea6; --focus-hover:#336f93;
     }
+
     html,body{height:100%}
     body{
       font-family:'Inter',system-ui,sans-serif;
-      background-color:var(--parchment-dark);
+      background-color:var(--bg);
       background-image:
-        radial-gradient(circle at top left, rgba(245,241,232,.05), transparent 40%),
-        radial-gradient(circle at bottom right, rgba(245,241,232,.05), transparent 50%);
+        radial-gradient(circle at top left, rgba(99,140,168,.08), transparent 40%),
+        radial-gradient(circle at bottom right, rgba(99,140,168,.06), transparent 55%);
       color:var(--ink-text); margin:0; padding:2rem; line-height:1.6;
     }
     .container{max-width:1600px;margin:0 auto;display:grid;gap:2rem}
 
-    h1,h2{font-family:'Cinzel',serif;color:var(--ink-bright);margin:0;font-weight:600}
+    h1,h2{font-family:'Caudex',serif;color:var(--ink-bright);margin:0;font-weight:700}
     h1{display:flex;align-items:center;gap:12px;font-size:1.85rem}
-    h2{display:flex;justify-content:space-between;align-items:center;font-size:1.35rem;border-bottom:2px solid var(--brush-stroke-border);padding-bottom:.65rem;letter-spacing:.4px}
-    h3{color:var(--ink-bright);margin:0;font-weight:600;font-size:1.05rem}
+    h2{display:flex;justify-content:space-between;align-items:center;font-size:1.35rem;border-bottom:2px solid var(--border);padding-bottom:.65rem;letter-spacing:.3px}
 
-    a{color:var(--focus-gold);text-decoration:none;font-weight:600}
+    a{color:var(--primary);text-decoration:none;font-weight:700}
     a:hover{text-decoration:underline}
 
-    .card{background:var(--parchment-light);border:1px solid var(--brush-stroke-border);border-radius:10px;padding:22px;box-shadow:var(--shadow)}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:22px;box-shadow:var(--shadow)}
 
     /* sticky header with right-aligned UTC clock */
     header.sticky-header{
       position: sticky; top: 0; z-index: 1000;
-      background: var(--parchment-dark);
-      border-bottom:1px solid var(--brush-stroke-border);
+      background: var(--bg);
+      border-bottom:1px solid var(--border);
       padding: .75rem 0;
       backdrop-filter: blur(4px);
     }
@@ -51,46 +58,53 @@
     .utc-clock{font-size:1rem; color:var(--ink-muted); white-space:nowrap; font-weight:600}
 
     .flash-list{margin:0;padding:0;list-style:none}
-    .flash{padding:12px 14px;border-radius:8px;color:#1a1208;margin:.5rem 0;font-weight:700;background:#d7c08a}
-    .flash.error{background:#b25555;color:#fff}
-    .flash.message,.flash.success{background:#cdb069;color:#1a1208}
+    .flash{padding:12px 14px;border-radius:8px;margin:.5rem 0;font-weight:700;border:1px solid var(--primary);background:rgba(61,126,166,.14);color:var(--ink-bright)}
+    .flash.error{border-color:#d44a3a;background:rgba(212,74,58,.16);color:#fff}
+    .flash.message,.flash.success{border-color:#46a490;background:rgba(70,164,144,.16);color:#e9fbf6}
 
     .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
-    .title-card{background:var(--parchment-dark);border:1px solid var(--brush-stroke-border);border-left:5px solid;border-radius:10px;padding:16px;position:relative;transition:transform .2s ease-out}
+    .title-card{background:var(--bg);border:1px solid var(--border);border-left:5px solid;border-radius:10px;padding:16px;position:relative;transition:transform .2s ease-out}
     .title-card:hover{transform:translateY(-3px)}
-    .title-card h3{display:flex;align-items:center;gap:10px;margin:0 0 .5rem}
+    .title-card h3{display:flex;align-items:center;gap:10px;margin:0 0 .5rem;font-family:'Inter',sans-serif;font-weight:700}
     .title-card p{margin:.25rem 0 0;font-size:.95rem;color:var(--ink-muted)}
     .title-card p strong{color:var(--ink-text);font-weight:700}
-    .title-effects{position:absolute;top:0;right:0;background:var(--parchment-dark);border-left:1px solid var(--brush-stroke-border);border-bottom:1px solid var(--brush-stroke-border);border-radius:0 10px 0 10px;padding:6px 10px;font-size:.8rem;color:var(--ink-muted);font-weight:500;opacity:0;visibility:hidden;transition:opacity .2s}
+    .title-effects{position:absolute;top:0;right:0;background:var(--bg);border-left:1px solid var(--border);border-bottom:1px solid var(--border);border-radius:0 10px 0 10px;padding:6px 10px;font-size:.8rem;color:var(--ink-muted);font-weight:600;opacity:0;visibility:hidden;transition:opacity .2s}
     .title-card:hover .title-effects{opacity:1;visibility:visible}
     .title-guardian-of-fire{border-left-color:var(--fire-nation-red)}
     .title-guardian-of-water{border-left-color:var(--water-tribe-blue)}
     .title-guardian-of-earth{border-left-color:var(--earth-kingdom-green)}
     .title-guardian-of-air{border-left-color:var(--air-nomad-grey)}
     .title-guardian-of-harmony{border-left-color:var(--harmony-gold)}
-    .title-architect,.title-general,.title-governor,.title-prefect{border-left-color:var(--generic-gold)}
+    .title-architect,.title-general,.title-governor,.title-prefect{border-left-color:#e8b351}
 
     .form-grid{display:grid;grid-template-columns:2fr 2fr 1.5fr 1.5fr 1fr 1fr;gap:14px;align-items:end}
     .form-grid > div{display:flex;flex-direction:column}
-    label{font-size:.9rem;font-weight:600;color:var(--ink-muted);display:block;margin-bottom:6px}
-    input,select,button{width:100%;padding:12px;border-radius:8px;border:1px solid var(--brush-stroke-border);background:var(--parchment-dark);color:var(--ink-text);box-sizing:border-box;font-size:1rem;transition:border-color .2s,box-shadow .2s,background-color .2s}
-    input:focus,select:focus{outline:none;border-color:var(--focus-gold);box-shadow:0 0 0 3px rgba(232,179,81,.25)}
-    button{background:var(--button-gold);color:#2a2118;font-weight:800;border:none;cursor:pointer;font-family:'Cinzel',serif;font-size:1.05rem;display:inline-flex;align-items:center;justify-content:center;gap:8px}
-    button:hover{background:var(--button-gold-hover)}
+    label{font-size:.9rem;font-weight:700;color:var(--ink-muted);display:block;margin-bottom:6px}
+    input,select,button{
+      width:100%;padding:12px;border-radius:8px;border:1px solid var(--border);
+      background:var(--bg);color:var(--ink-text);box-sizing:border-box;font-size:1rem;
+      transition:border-color .2s,box-shadow .2s,background-color .2s
+    }
+    input:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--ring)}
+    button{
+      background:var(--primary);color:#0c1720;font-weight:800;border:none;cursor:pointer;
+      font-family:'Caudex',serif;font-size:1.05rem;display:inline-flex;align-items:center;justify-content:center;gap:8px
+    }
+    button:hover{background:var(--primary-hover)}
     button:active{transform:scale(.985)}
     button svg{width:1.2em;height:1.2em}
 
     .timezone-table{width:100%;border-collapse:collapse;margin-top:1rem}
-    .timezone-table th,.timezone-table td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--brush-stroke-border)}
-    .timezone-table th{font-family:'Cinzel',serif;color:var(--ink-muted);font-weight:500;font-size:.9rem;border-bottom-width:2px}
-    .timezone-table tr.user-local-time{background-color:rgba(232,179,81,.1);border-left:3px solid var(--focus-gold)}
-    .tz-dayflag{display:inline-block;margin-left:8px;padding:2px 8px;font-size:.75rem;border-radius:999px;background:rgba(232,179,81,.15);border:1px solid rgba(232,179,81,.35);color:var(--ink-muted);vertical-align:middle}
+    .timezone-table th,.timezone-table td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--border)}
+    .timezone-table th{font-family:'Caudex',serif;color:var(--ink-muted);font-weight:700;font-size:.9rem;border-bottom-width:2px}
+    .timezone-table tr.user-local-time{background-color:rgba(61,126,166,.12);border-left:3px solid var(--primary)}
+    .tz-dayflag{display:inline-block;margin-left:8px;padding:2px 8px;font-size:.75rem;border-radius:999px;background:rgba(61,126,166,.15);border:1px solid rgba(61,126,166,.35);color:var(--ink-muted);vertical-align:middle}
 
     .schedule-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(350px,1fr));gap:2rem;margin-top:1rem}
-    .schedule-day h3{font-family:'Inter',sans-serif;font-size:1.1rem;color:var(--ink-bright);padding-bottom:.5rem;border-bottom:1px solid var(--brush-stroke-border);margin-bottom:1rem}
+    .schedule-day h3{font-family:'Inter',sans-serif;font-size:1.1rem;color:var(--ink-bright);padding-bottom:.5rem;border-bottom:1px solid var(--border);margin-bottom:1rem}
     .schedule-slot{margin-bottom:1.5rem}
     .slot-time{font-weight:700;font-size:1rem;color:var(--ink-muted)}
-    .reservation-card{background:var(--parchment-dark);border:1px solid var(--brush-stroke-border);border-left:4px solid var(--generic-gold);border-radius:8px;padding:12px;margin-top:8px}
+    .reservation-card{background:var(--bg);border:1px solid var(--border);border-left:4px solid #e8b351;border-radius:8px;padding:12px;margin-top:8px}
     .reservation-card p{margin:2px 0;font-size:.95rem}
     .reservation-card strong{color:var(--ink-bright)}
     .res-fire{border-left-color:var(--fire-nation-red)}
@@ -128,7 +142,7 @@
       <div class="header-bar">
         <h1>
           <img src="{{ url_for('static', filename='icons/title-requestor.png') }}" width="32" height="32" alt="Title Requestor icon" />
-          Server 1021 Temple Title Request Dashboard
+          Server 1041 Temple Title Request Dashboard
         </h1>
         <div id="utc-clock" class="utc-clock" aria-live="polite" title="Current UTC time"></div>
       </div>
@@ -281,14 +295,14 @@
     <footer class="footer-links">
       <a href="{{ url_for('view_log') }}">View Full Request Log</a> &middot;
       <a href="{{ url_for('admin.login') }}">Admin Dashboard</a>
-      <p>This is an unofficial tool for the Server 1021 Avatar: Realms Collide community.</p>
+      <p>This is an unofficial tool for the Server 1041 Avatar: Realms Collide community.</p>
     </footer>
   </div>
 
-  <!-- Time Guide + Title Filter + UTC Clock JS -->
+  <!-- Time Guide + Title Filter + UTC Clock JS (unchanged) -->
   <script>
   (function() {
-    // ====== UTC CLOCK (top-right) ======
+    // UTC clock
     function updateUtcClock() {
       const now = new Date();
       const opts = {
@@ -302,7 +316,7 @@
     setInterval(updateUtcClock, 1000);
     updateUtcClock();
 
-    // ====== Time guide zones ======
+    // time guide data
     const ZONES = [
       { label: "Los Angeles (PT)", tz: "America/Los_Angeles" },
       { label: "Denver (MT)", tz: "America/Denver" },
@@ -321,7 +335,7 @@
       if (userTz && !ZONES.some(z => z.tz === userTz)) {
         ZONES.unshift({ label: "Your Timezone ✨", tz: userTz, isLocal: true });
       }
-    } catch { /* no-op */ }
+    } catch {}
 
     function formatLocalTime(dtUTC, targetTZ) {
       const dayUTC = dtUTC.getUTCDate();
@@ -355,7 +369,7 @@
     }
     fillTimeGuide();
 
-    // ====== Title filter ======
+    // title filter
     const filterSelect = document.getElementById('filter-title');
     const scheduleGrid = document.getElementById('schedule-grid');
 

@@ -6,77 +6,168 @@
   <title>Admin • Servers</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="color-scheme" content="dark" />
+
+  <!-- Fonts: Caudex (headings) + Inter (body) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caudex:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
   <style>
     :root{
-      --bg:#121417; --card:#1d2024; --alt:#0f1114; --border:#3e444c;
-      --text:#c4c9d4; --muted:#8e9297; --bright:#fff;
-      --primary:#c39a3f; --primary-hover:#af8b39; --ring:rgba(195,154,63,.25);
-      --danger:#f04747; --danger-hover:#d83c3e; --success:#43b581;
-      --shadow:0 10px 40px rgba(0,0,0,.5); /* restored so mobile menu’s shadow works */
+      /* Match the updated admin palette (blue/teal) */
+      --bg:#0f141a; --card:#111821; --alt:#0c1218; --border:#2a3a49;
+      --text:#e7edf4; --muted:#9cb0c3; --bright:#ffffff;
+      --primary:#3d7ea6; --primary-hover:#336f93; --ring:rgba(61,126,166,.35);
+      --danger:#d44a3a; --danger-hover:#bf3f31; --success:#46a490;
+      --shadow:0 12px 40px rgba(0,0,0,.45);
     }
     *{box-sizing:border-box}
     html,body{margin:0;height:100%}
-    body{background:var(--bg);color:var(--text);font:16px/1.55 'Inter',system-ui,sans-serif;padding:24px}
-    .container{max-width:1120px;margin:0 auto;display:grid;gap:24px}
-    .grid{display:grid;gap:24px} /* define the class used on <main> */
-    header.header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:12px}
-    h1{margin:0;font:700 1.8rem 'Cinzel',serif;color:var(--bright)}
-    nav a{color:var(--primary);text-decoration:none;font-weight:700}
+    body{
+      background:var(--bg);
+      color:var(--text);
+      font:16px/1.55 'Inter',system-ui,sans-serif;
+      padding:24px;
+      overflow-x:hidden; /* prevent layout wiggle on details/open + long strings */
+    }
 
-    .flash{padding:12px 14px;border-radius:10px;border:1px solid var(--primary);background:rgba(195,154,63,.12);color:var(--primary);font-weight:700}
-    .flash.error{border-color:var(--danger);background:rgba(240,71,71,.12);color:#fff}
+    .container{max-width:1200px;margin:0 auto;display:grid;gap:24px}
+    .grid{display:grid;gap:24px}
 
-    .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;border-top:3px solid var(--primary)}
-    .card h2{margin:0 0 .6rem;font:700 1.2rem 'Cinzel',serif;color:var(--bright)}
-    .muted{color:var(--muted);font-size:0.9rem;}
+    header.header{
+      display:flex;justify-content:space-between;align-items:center;
+      border-bottom:1px solid var(--border);padding-bottom:12px
+    }
+    h1{margin:0;font:700 1.8rem 'Caudex',serif;color:var(--bright)}
+    h2{margin:0 0 .6rem;font:700 1.2rem 'Caudex',serif;color:var(--bright)}
+
+    .nav a{color:var(--primary);text-decoration:none;font-weight:700}
+    .nav a:hover{text-decoration:underline}
+
+    .flash{
+      padding:12px 14px;border-radius:10px;
+      border:1px solid var(--primary);
+      background:rgba(61,126,166,.14);
+      color:var(--bright);font-weight:700
+    }
+    .flash.error{border-color:var(--danger);background:rgba(212,74,58,.16)}
+    .flash.success{border-color:var(--success);background:rgba(70,164,144,.16);color:#e9fbf6}
+
+    .card{
+      background:var(--card);border:1px solid var(--border);
+      border-radius:12px;padding:24px;border-top:3px solid var(--primary)
+    }
+    .muted{color:var(--muted);font-size:.9rem}
 
     label{display:block;font-weight:600;margin-bottom:6px}
-    input[type="text"], input[type="url"]{width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:#0f1114;color:var(--bright)}
+    input[type="text"], input[type="url"]{
+      width:100%;padding:12px;border-radius:10px;
+      border:1px solid var(--border);background:var(--alt);color:var(--bright)
+    }
     input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 4px var(--ring)}
 
-    .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:1rem;}
-    .checkbox-group{display:flex;align-items:center;gap:10px;padding:12px;background:var(--alt);border-radius:10px;margin-top:1.5rem;}
+    .form-grid{
+      display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+      gap:16px;margin-top:1rem;
+    }
+    .checkbox-group{
+      display:flex;align-items:center;gap:10px;padding:12px;
+      background:var(--alt);border-radius:10px;margin-top:1.5rem;
+    }
 
-    .actions{display:flex;gap:8px;align-items:center;justify-content:flex-end;}
-    button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 14px;border-radius:10px;border:0;background:var(--primary);color:#0a0b0d;font-weight:800;text-decoration:none;cursor:pointer;font-family:'Cinzel',serif}
+    .actions{display:flex;gap:8px;align-items:center;justify-content:flex-end}
+    button,.btn{
+      display:inline-flex;align-items:center;justify-content:center;gap:8px;
+      padding:10px 14px;border-radius:10px;border:0;background:var(--primary);
+      color:#0c1720;font-weight:800;text-decoration:none;cursor:pointer;
+      font-family:'Caudex',serif;
+    }
     button:hover,.btn:hover{background:var(--primary-hover)}
-    .btn-danger{background:var(--danger);color:#fff} .btn-danger:hover{background:var(--danger-hover)}
-    .btn-secondary{background:var(--alt);color:var(--bright);border:1px solid var(--border)} .btn-secondary:hover{border-color:var(--primary);background:var(--card)}
+    .btn-danger{background:var(--danger);color:#fff}
+    .btn-danger:hover{background:var(--danger-hover)}
+    .btn-secondary{background:var(--alt);color:var(--bright);border:1px solid var(--border)}
+    .btn-secondary:hover{border-color:var(--primary);background:var(--card)}
 
-    .table-wrapper{overflow-x:auto;}
-    table{width:100%;border-collapse:collapse;margin-top:1.5rem}
-    th,td{padding:12px 14px;border-bottom:1px solid var(--border);text-align:left;vertical-align:middle;white-space:nowrap;}
-    th{color:var(--muted);font:700 .8rem 'Cinzel',serif;letter-spacing:.03em;text-transform:uppercase}
-    tbody tr:nth-of-type(odd){background-color:var(--alt);}
-    code{background:var(--alt);padding:3px 6px;border-radius:8px;border:1px solid var(--border)}
-    .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:rgba(67,181,129,.15);color:var(--success);font-weight:700;font-size:.8rem}
-    .badge svg{width:1em;height:1em;}
+    .table-wrapper{overflow-x:auto}
+    table{
+      width:100%;border-collapse:collapse;margin-top:1.5rem;
+      table-layout:fixed; /* prevents width jump when details/edit rows open */
+    }
+    /* Column sizing for stability */
+    col.col-guild{width:220px}
+    col.col-webhook{width:40%}
+    col.col-role{width:180px}
+    col.col-status{width:160px}
+    col.col-actions{width:160px}
 
-    details > summary {list-style: none; cursor:pointer; color:var(--primary); font-weight:700;}
-    details > summary::-webkit-details-marker {display: none;}
-    details .webhook-code {margin-top:8px; max-width: 300px; overflow-wrap: break-word; white-space: normal;}
+    th,td{
+      padding:12px 14px;border-bottom:1px solid var(--border);
+      text-align:left;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    }
+    th{
+      color:var(--muted);font:700 .8rem 'Caudex',serif;
+      letter-spacing:.03em;text-transform:uppercase
+    }
+    tbody tr:nth-of-type(odd){background-color:var(--alt)}
+    code{
+      background:var(--alt);padding:3px 6px;border-radius:8px;border:1px solid var(--border)
+    }
+    .badge{
+      display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
+      background:rgba(70,164,144,.15);color:var(--success);font-weight:700;font-size:.8rem
+    }
+    .badge svg{width:1em;height:1em}
 
-    .action-menu { position: relative; }
-    .action-menu-content { display: none; position: absolute; right: 0; top: 110%; background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 5px 20px rgba(0,0,0,.3); z-index: 10; padding: 6px; min-width: 180px; }
-    .action-menu-content.is-open { display: block; }
-    .action-menu-content a, .action-menu-content button { background: none; color: var(--text); width: 100%; text-align: left; padding: 8px 12px; font-family: 'Inter', sans-serif; font-weight: 600; font-size: 0.9rem; }
-    .action-menu-content a:hover, .action-menu-content button:hover { background: var(--alt); color: var(--bright); }
-    .action-menu-content form button { color: var(--danger); }
+    details > summary{list-style:none;cursor:pointer;color:var(--primary);font-weight:700}
+    details > summary::-webkit-details-marker{display:none}
+    details .webhook-code{
+      margin-top:8px; max-width: 100%; overflow-wrap: anywhere; white-space: normal;
+    }
+
+    /* In-table edit row */
+    .edit-row td{padding:0}
+    .edit-row .edit-panel{
+      padding:24px;background:var(--alt);
+      /* keep inner content from stretching table wider than viewport */
+      overflow:auto;
+    }
+
+    /* Action menu */
+    .action-menu{ position:relative }
+    .action-menu-content{
+      display:none; position:absolute; right:0; top:110%;
+      background:var(--card); border:1px solid var(--border); border-radius:10px;
+      box-shadow:0 5px 20px rgba(0,0,0,.3); z-index:10; padding:6px; min-width: 180px;
+    }
+    .action-menu-content.is-open{ display:block }
+    .action-menu-content a, .action-menu-content button{
+      background:none; color:var(--text); width:100%; text-align:left; padding:8px 12px;
+      font-family:'Inter',sans-serif; font-weight:600; font-size:.9rem;
+    }
+    .action-menu-content a:hover, .action-menu-content button:hover{ background:var(--alt); color:var(--bright) }
+    .action-menu-content form button{ color:var(--danger) }
 
     /* Mobile Navigation */
-    .nav { display: flex; gap: 12px; }
-    .menu-toggle { display: none; }
-    @media (max-width: 992px) {
-      .header { flex-wrap: wrap; gap: 1rem; }
-      .nav-links { display: none; position: absolute; top: 85px; right: 24px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 12px; flex-direction: column; gap: 0; z-index: 100; }
-      .nav-links.is-open { display: flex; }
-      .nav-links a { padding: 12px 16px; border-radius: 8px; width: 200px; }
-      .nav-links a:hover { background: var(--alt); text-decoration: none; }
-      .menu-toggle { display: block; background: none; border: none; padding: 8px; cursor: pointer; color: var(--muted); }
-      .menu-toggle:hover { color: var(--bright); }
-      .menu-toggle svg { width: 28px; height: 28px; }
+    .nav{ display:flex; gap:12px }
+    .menu-toggle{ display:none }
+    @media (max-width: 992px){
+      .header{ flex-wrap:wrap; gap:1rem }
+      .nav-links{
+        display:none; position:absolute; top:85px; right:24px; background:var(--card);
+        border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow);
+        padding:12px; flex-direction:column; gap:0; z-index:100;
+      }
+      .nav-links.is-open{ display:flex }
+      .nav-links a{ padding:12px 16px; border-radius:8px; width:200px }
+      .nav-links a:hover{ background:var(--alt); text-decoration:none }
+      .menu-toggle{
+        display:block; background:none; border:none; padding:8px; cursor:pointer; color:var(--muted);
+      }
+      .menu-toggle:hover{ color:var(--bright) }
+      .menu-toggle svg{ width:28px; height:28px }
+      /* Mobile table tweaks */
+      table{ table-layout:auto }
+      th,td{ white-space:normal }
     }
   </style>
 </head>
@@ -127,7 +218,7 @@
             </div>
           </div>
           <div class="checkbox-group">
-            <input id="is_default" name="is_default" type="checkbox" value="1" style="width:auto;height:auto;" />
+            <input id="is_default" name="is_default" type="checkbox" value="1" style="width:auto;height:auto" />
             <label for="is_default" style="margin:0; font-weight:normal;">Set this as the default server for bot commands</label>
           </div>
           <div style="margin-top:1.5rem; display:flex; gap:12px;">
@@ -142,8 +233,21 @@
         {% if servers %}
           <div class="table-wrapper">
             <table>
+              <colgroup>
+                <col class="col-guild">
+                <col class="col-webhook">
+                <col class="col-role">
+                <col class="col-status">
+                <col class="col-actions">
+              </colgroup>
               <thead>
-                <tr><th>Server (Guild ID)</th><th>Webhook URL</th><th>Guardian Role</th><th>Status</th><th style="text-align:right;">Actions</th></tr>
+                <tr>
+                  <th>Server (Guild ID)</th>
+                  <th>Webhook URL</th>
+                  <th>Guardian Role</th>
+                  <th>Status</th>
+                  <th style="text-align:right;">Actions</th>
+                </tr>
               </thead>
               <tbody>
                 {% for s in servers %}
@@ -166,7 +270,7 @@
                         <form action="{{ url_for('admin.servers_page') }}" method="POST">
                           <input type="hidden" name="action" value="set_default" />
                           <input type="hidden" name="guild_id" value="{{ s.guild_id }}" />
-                          <button type="submit" class="btn-secondary" style="padding: 6px 10px; font-size:0.9rem;">Make Default</button>
+                          <button type="submit" class="btn-secondary" style="padding: 6px 10px; font-size:.9rem;">Make Default</button>
                         </form>
                       {% endif %}
                     </td>
@@ -189,11 +293,13 @@
                       </div>
                     </td>
                   </tr>
+
+                  <!-- Inline edit row (kept) -->
                   <tr class="edit-row" id="edit-{{ loop.index }}" style="display:none;">
-                    <td colspan="5" style="padding:0;">
-                      <div style="padding: 24px; background: var(--alt);">
+                    <td colspan="5">
+                      <div class="edit-panel">
                         <details open>
-                          <summary style="font-size:1.1rem; margin-bottom:1rem;">Editing Server <code>{{ s.guild_id }}</code></summary>
+                          <summary style="font-size:1.05rem; margin-bottom:1rem;">Editing Server <code>{{ s.guild_id }}</code></summary>
                           <form class="form-grid" action="{{ url_for('admin.servers_page') }}" method="POST" novalidate>
                             <input type="hidden" name="action" value="update" />
                             <input type="hidden" name="guild_id" value="{{ s.guild_id }}" />
@@ -206,7 +312,7 @@
                               <input id="guardian_role_id_{{ loop.index }}" name="guardian_role_id" type="text" value="{{ s.guardian_role_id or '' }}" />
                             </div>
                             <div class="checkbox-group" style="margin-top:0;">
-                              <input id="is_default_{{ loop.index }}" name="is_default" type="checkbox" value="1" {% if s.is_default %}checked{% endif %} style="width:auto;height:auto;" />
+                              <input id="is_default_{{ loop.index }}" name="is_default" type="checkbox" value="1" {% if s.is_default %}checked{% endif %} style="width:auto;height:auto" />
                               <label for="is_default_{{ loop.index }}" style="margin:0; font-weight:normal;">Set as default</label>
                             </div>
                             <div style="align-self:end;">
@@ -230,7 +336,7 @@
   </div>
 
   <script>
-    // Mobile navigation menu
+    // Mobile navigation
     document.addEventListener('DOMContentLoaded', function () {
       const menuToggle = document.getElementById('menu-toggle');
       const navLinks = document.getElementById('nav-links');
@@ -255,8 +361,11 @@
       const editRow = document.getElementById(`edit-${index}`);
       if (editRow) {
         editRow.style.display = 'table-row';
+        // Keep scroll smooth without shifting layout width
         editRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
+      // Close any open action menus
+      document.querySelectorAll('.action-menu-content.is-open').forEach(menu => menu.classList.remove('is-open'));
     }
 
     // Close menus when clicking outside
