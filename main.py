@@ -299,6 +299,13 @@ def log_to_csv(request_data: dict):
     except IOError as e:
         logger.error(f"Error writing to CSV: {e}")
 
+# simple structured logger used by web routes
+def log_action(action: str, **fields):
+    try:
+        logger.info("[WEB_ACTION] %s %s", action, json.dumps(fields, default=str))
+    except Exception:
+        logger.info("[WEB_ACTION] %s %s", action, fields)
+
 def load_state():
     global state
     with state_lock:
@@ -1149,7 +1156,9 @@ register_routes(
         ORDERED_TITLES=ORDERED_TITLES, TITLES_CATALOG=TITLES_CATALOG,
         REQUESTABLE=REQUESTABLE, ADMIN_PIN=ADMIN_PIN,
         ICON_FILES=ICON_FILES,  # <-- add this
-        state=state, save_state=save_state, log_to_csv=log_to_csv,
+        state=state, save_state=save_state, 
+        log_to_csv=log_to_csv,
+        log_action=log_action,
         parse_iso_utc=parse_iso_utc, now_utc=now_utc,
         iso_slot_key_naive=iso_slot_key_naive,
         title_is_vacant_now=title_is_vacant_now,
@@ -1184,7 +1193,7 @@ register_admin(
         db_set_shift_hours=db_set_shift_hours,
         send_webhook_notification=send_webhook_notification,
         SERVER_CONFIGS=SERVER_CONFIGS,  # pass-by-reference cache
-
+        log_action=log_action,
         db=db,
         models=dict(
             Title=Title,

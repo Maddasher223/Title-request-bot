@@ -1,16 +1,15 @@
-# Web stack (what your main.py actually uses)
+# Web stack
 Flask==3.0.3
 waitress==2.1.2
+Flask-SQLAlchemy==3.1.1
+SQLAlchemy==2.0.34
 
-# Discord bot
+# Discord bot (has app_commands!)
 discord.py==2.4.0
 
-# HTTP client (for your webhook calls)
+# HTTP client
 requests==2.32.3
 
-# Optional but handy for local dev (ENV files)
+# Environment & Airtable
 python-dotenv==1.0.1
-
 pyairtable==2.3.3
-
-Flask-SQLAlchemy==3.1.1
