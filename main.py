@@ -659,8 +659,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         pass
 
 def _time_choices():
-    return [app_commands.Choice(name="00:00 UTC", value="00:00"),
-            app_commands.Choice(name="12:00 UTC", value="12:00")]
+    slots = compute_slots(_safe_shift_hours())
+    return [app_commands.Choice(name=f"{s} UTC", value=s) for s in slots]
 
 titles_group = app_commands.Group(name="titles", description="View and manage temple titles")
 

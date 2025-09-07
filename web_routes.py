@@ -41,6 +41,9 @@ def register_routes(app, deps):
     # Optional helpers (no-ops if absent)
     set_shift_hours = deps.get('set_shift_hours') or db_helpers.get('set_shift_hours') or (lambda *_: None)
     schedule_lookup = deps.get('schedule_lookup')  # may be None
+    # Helpers from DB (with safe fallbacks)
+    compute_slots = db_helpers.get('compute_slots') or (lambda sh: [f"{h:02d}:00" for h in range(0, 24, max(1, int(sh) if int(sh) > 0 and 24 % int(sh) == 0 else 12))])
+    requestable_title_names = db_helpers.get('requestable_title_names') or (lambda: sorted([t for t in ORDERED_TITLES if t != "Guardian of Harmony"]))
 
     # Optional: async logger channel
     async def _noop_log_channel(_bot, _msg):
@@ -212,21 +215,30 @@ def register_routes(app, deps):
 
         today = now_utc().date()
         days = [(today + timedelta(days=i)) for i in range(7)]
-        # show 00:00 and 12:00 by default
-        hours = ["00:00", "12:00"]
-        schedules = state.get('schedules', {})
-        requestable_titles = REQUESTABLE
+
+        # ❌ old (hard-coded):
+        # hours = ["00:00", "12:00"]
+        # requestable_titles = REQUESTABLE
+
+        # ✅ new (drives from DB setting + DB titles):
+        shift = int(get_shift_hours())
+        hours = compute_slots(shift)           # e.g., 00:00, 04:00, 08:00, 12:00, ...
+        requestable_titles = requestable_title_names()  # DB-truth, excludes unrequestable
         cfg = state.get('config', {})
+
+        allowed_hours = set(hours)
 
         # { date_iso: { "HH:MM": { title_name: {"ign":..,"coords":..} } } }
         schedule_grid = {}
-        for title_name, sched in schedules.items():
+        for title_name, sched in state.get('schedules', {}).items():
             for k, v in sched.items():
                 dt = _safe_parse_iso(k)
                 if not dt:
                     continue
                 dkey = dt.date().isoformat()
                 tkey = dt.strftime("%H:%M")
+                if tkey not in allowed_hours:  # <--- add this guard
+                    continue
                 day_map = schedule_grid.setdefault(dkey, {})
                 time_map = day_map.setdefault(tkey, {})
                 # Always store as dict to simplify template logic
@@ -271,8 +283,18 @@ def register_routes(app, deps):
         if not all([title_name, ign, date_str, time_str]):
             flash("Missing form data: title, IGN, date, and time are required.")
             return redirect(url_for("dashboard"))
-        if title_name not in REQUESTABLE:
+
+        # ✅ verify against DB-requestable titles, not the startup constant
+        _req_titles = set(requestable_title_names())
+        if title_name not in _req_titles:
             flash("This title cannot be requested.")
+            return redirect(url_for("dashboard"))
+
+        # ✅ ensure the selected time matches the current slot grid
+        _shift = int(get_shift_hours())
+        _allowed = set(compute_slots(_shift))  # e.g., {"00:00","04:00","08:00","12:00","16:00","20:00"}
+        if time_str not in _allowed:
+            flash(f"Time must be one of {sorted(_allowed)} UTC.")
             return redirect(url_for("dashboard"))
 
         try:

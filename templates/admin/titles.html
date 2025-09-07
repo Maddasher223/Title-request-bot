@@ -4,49 +4,93 @@
   <meta charset="UTF-8" />
   <title>Admin • Titles</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Caudex (headings) + Inter (body) -->
+  <link href="https://fonts.googleapis.com/css2?family=Caudex:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     :root{
-      --bg:#121417; --card:#1d2024; --alt:#0f1114; --border:#3e444c;
-      --text:#c4c9d4; --muted:#8e9297; --bright:#fff;
-      --primary:#c39a3f; --primary-hover:#af8b39; --ring:rgba(195,154,63,.25);
-      --danger:#f04747; --success:#43b581; --shadow:0 10px 40px rgba(0,0,0,.5);
+      /* Current admin palette */
+      --bg:#0f141a; --card:#111821; --alt:#0c1218; --border:#2a3a49;
+      --text:#e7edf4; --muted:#9cb0c3; --bright:#ffffff;
+      --primary:#3d7ea6; --primary-hover:#336f93; --ring:rgba(61,126,166,.35);
+      --danger:#d44a3a; --success:#46a490;
+      --shadow:0 12px 40px rgba(0,0,0,.45);
     }
+
     *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 'Inter',system-ui,sans-serif;padding:24px}
+    body{
+      margin:0;background:
+        radial-gradient(60rem 60rem at 50% -20%, rgba(99,140,168,.08), transparent 55%),
+        var(--bg);
+      color:var(--text);
+      font:16px/1.55 'Inter',system-ui,sans-serif;
+      padding:24px
+    }
     .container{max-width:1100px;margin:0 auto;display:grid;gap:18px}
 
-    .header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:12px}
-    h1{margin:0;display:flex;align-items:center;gap:.6rem;font:700 1.8rem 'Cinzel',serif;color:var(--bright)}
+    .header{
+      display:flex;justify-content:space-between;align-items:center;
+      border-bottom:1px solid var(--border);padding-bottom:12px
+    }
+    h1{
+      margin:0;display:flex;align-items:center;gap:.6rem;
+      font:700 1.8rem 'Caudex',serif;color:var(--bright)
+    }
     a{color:var(--primary);text-decoration:none;font-weight:700}
     a:hover{text-decoration:underline}
     .nav{display:flex;gap:12px;flex-wrap:wrap}
 
-    .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;box-shadow:var(--shadow);border-top:3px solid var(--primary)}
-    .card h2{margin:0 0 .6rem;font:700 1.2rem 'Cinzel',serif;color:var(--bright)}
+    .card{
+      background:var(--card);border:1px solid var(--border);border-radius:12px;
+      padding:18px;box-shadow:var(--shadow);border-top:3px solid var(--primary)
+    }
+    .card h2{
+      margin:0 0 .6rem;font:700 1.2rem 'Caudex',serif;color:var(--bright)
+    }
     .muted{color:var(--muted)}
 
-    .flash{padding:12px 14px;border-radius:10px;border:1px solid var(--primary);
-      background:rgba(195,154,63,.12);color:var(--primary);font-weight:700}
-    .flash.error{border-color:var(--danger);background:rgba(240,71,71,.12);color:#fff}
-    .flash.success{border-color:var(--success);background:rgba(67,181,129,.12);color:#0e1a0f}
+    .flash{
+      padding:12px 14px;border-radius:10px;border:1px solid var(--primary);
+      background:rgba(61,126,166,.14);color:var(--bright);font-weight:700
+    }
+    .flash.error{border-color:var(--danger);background:rgba(212,74,58,.16)}
+    .flash.success{border-color:var(--success);background:rgba(70,164,144,.16);color:#e9fbf6}
 
     table{width:100%;border-collapse:collapse}
     th,td{padding:12px 14px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
-    th{color:var(--muted);font:700 .85rem 'Cinzel',serif;letter-spacing:.03em;text-transform:uppercase}
+    th{color:var(--muted);font:700 .85rem 'Caudex',serif;letter-spacing:.03em;text-transform:uppercase}
 
     .row-actions{display:flex;gap:10px;flex-wrap:wrap}
     label{display:block;font-weight:600;margin-bottom:6px}
-    input[type=text]{padding:10px;border-radius:10px;border:1px solid var(--border);background:var(--alt);color:var(--bright);min-width:220px}
+    input[type=text]{
+      padding:10px;border-radius:10px;border:1px solid var(--border);
+      background:var(--alt);color:var(--bright);min-width:220px
+    }
     input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 4px var(--ring)}
-    button{padding:10px 12px;border:0;border-radius:10px;background:var(--primary);color:#0a0b0d;font-weight:800;cursor:pointer;font-family:'Cinzel',serif}
+
+    button{
+      padding:10px 12px;border:0;border-radius:10px;background:var(--primary);color:#0c1720;
+      font-weight:800;cursor:pointer;font-family:'Caudex',serif;transition:background-color .2s
+    }
     button:hover{background:var(--primary-hover)}
+    button[disabled]{opacity:.7;cursor:not-allowed}
+
     code{background:var(--alt);padding:3px 6px;border-radius:8px;border:1px solid var(--border)}
-    .pill{display:inline-block;padding:4px 8px;border-radius:999px;border:1px solid var(--border);background:var(--alt);font-weight:700}
+    .pill{
+      display:inline-block;padding:4px 8px;border-radius:999px;border:1px solid var(--border);
+      background:var(--alt);font-weight:700
+    }
     .grid-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
     .inline{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
     .icon-thumb{width:28px;height:28px;border-radius:6px;border:1px solid var(--border);object-fit:contain;background:#0c0e11}
+
+    /* a11y helper the template already references */
+    .visually-hidden{
+      position:absolute !important; width:1px; height:1px; margin:-1px; padding:0;
+      overflow:hidden; clip:rect(0 0 1px 1px); clip-path:inset(50%); border:0;
+    }
   </style>
 </head>
 <body>
@@ -141,7 +185,7 @@
                   <form action="{{ url_for('admin.titles_page') }}" method="POST" autocomplete="off" novalidate>
                     <input type="hidden" name="action" value="rename" />
                     <input type="hidden" name="old_name" value="{{ t.name }}" />
-                    <label for="rn_{{ loop.index }}" class="visually-hidden" style="position:absolute;left:-9999px">New name for {{ t.name }}</label>
+                    <label for="rn_{{ loop.index }}" class="visually-hidden">New name for {{ t.name }}</label>
                     <input id="rn_{{ loop.index }}" type="text" name="new_name" placeholder="New name…" required />
                     <button type="submit">Rename</button>
                   </form>
@@ -150,7 +194,7 @@
                   <form action="{{ url_for('admin.titles_page') }}" method="POST" autocomplete="off" novalidate>
                     <input type="hidden" name="action" value="icon" />
                     <input type="hidden" name="name" value="{{ t.name }}" />
-                    <label for="ic_{{ loop.index }}" class="visually-hidden" style="position:absolute;left:-9999px">Icon URL for {{ t.name }}</label>
+                    <label for="ic_{{ loop.index }}" class="visually-hidden">Icon URL for {{ t.name }}</label>
                     <input id="ic_{{ loop.index }}" type="text" name="icon_url" placeholder="/static/icons/… or https://…" />
                     <button type="submit">Save Icon</button>
                   </form>
