@@ -29,7 +29,6 @@ def _normalize_db_uri(raw: str | None) -> str:
     - Falls back to a sqlite DB in ./instance/app.db
     """
     if not raw:
-        # Absolute path for SQLite (4 slashes on *nix, 3 on Windows)
         sqlite_path = instance_dir / "app.db"
         if os.name == "nt":
             return f"sqlite:///{sqlite_path}"
@@ -131,6 +130,17 @@ def upsert_setting(key: str, value: str) -> bool:
         db.session.add(Setting(key=key, value=value))
         return True
 
+def _mask_db_uri(u: str) -> str:
+    try:
+        p = urlparse(u)
+        if p.password:
+            netloc = p.netloc.replace(f":{p.password}@", ":***@")
+        else:
+            netloc = p.netloc
+        return urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
+    except Exception:
+        return "(unavailable)"
+
 if __name__ == "__main__":
     with app.app_context():
         # For sqlite, add pragmatic settings
@@ -138,7 +148,12 @@ if __name__ == "__main__":
             event.listen(db.engine, "connect", _sqlite_pragmas)
 
         # Create tables if they don't exist
-        db.create_all()
+        try:
+            db.create_all()
+        except SQLAlchemyError as e:
+            print("Create tables failed.", file=sys.stderr)
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
         changed_titles = 0
         for t in DEFAULT_TITLES:
@@ -154,7 +169,6 @@ if __name__ == "__main__":
             db.session.commit()
         except SQLAlchemyError as e:
             db.session.rollback()
-            # Fail visibly for CI/render logs
             print("Seed failed. Rolling back.", file=sys.stderr)
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
@@ -163,5 +177,5 @@ if __name__ == "__main__":
             "Seed complete.\n"
             f"- Titles added/updated: {changed_titles}\n"
             f"- Settings added/updated: {changed_settings}\n"
-            f"- DB URI: {uri}"
+            f"- DB URI: {_mask_db_uri(uri)}"
         )

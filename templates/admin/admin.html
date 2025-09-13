@@ -172,7 +172,7 @@
     <p class="muted">Welcome, Guardian. This is the central control panel for managing titles, reservations, and Discord server settings.</p>
 
     {% for category, message in get_flashed_messages(with_categories=True) %}
-      <div class="flash {{ category|e }}" role="alert" aria-live="polite">{{ message }}</div>
+      <div class="flash {{ category }}" role="alert" aria-live="polite">{{ message }}</div>
     {% endfor %}
 
     <div class="grid">
@@ -217,9 +217,9 @@
               <tbody>
                 {% for s in servers %}
                   <tr>
-                    <td><code>{{ s.guild_id }}</code></td>
+                    <td><code>{{ s.guild_id | e }}</code></td>
                     <td>{% if s.is_default %}✅ Yes{% else %}<span class="muted">No</span>{% endif %}</td>
-                    <td><code>{{ s.guardian_role_id or '-' }}</code></td>
+                    <td><code>{{ (s.guardian_role_id or '-') | e }}</code></td>
                   </tr>
                 {% endfor %}
               </tbody>
@@ -257,16 +257,16 @@
             <tbody>
               {% for t in titles %}
                 <tr>
-                  <td><strong>{{ t.name }}</strong></td>
+                  <td><strong>{{ t.name | e }}</strong></td>
                   <td>{{ '✅ Yes' if t.requestable else '❌ No' }}</td>
-                  <td><code>{{ t.icon_url or '-' }}</code></td>
+                  <td><code>{{ (t.icon_url or '-') | e }}</code></td>
                 </tr>
               {% endfor %}
             </tbody>
           </table>
           <div class="actions" style="margin-top:12px">
             <a href="{{ url_for('admin.titles_page') }}" class="icon-link">
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" /></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125" /></svg>
               <span>Manage Titles</span>
             </a>
           </div>

@@ -11,14 +11,12 @@
   <link href="https://fonts.googleapis.com/css2?family=Caudex:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
     :root{
-      /* Current admin palette */
       --bg:#0f141a; --card:#111821; --alt:#0c1218; --border:#2a3a49;
       --text:#e7edf4; --muted:#9cb0c3; --bright:#ffffff;
       --primary:#3d7ea6; --primary-hover:#336f93; --ring:rgba(61,126,166,.35);
       --danger:#d44a3a; --success:#46a490;
       --shadow:0 12px 40px rgba(0,0,0,.45);
     }
-
     *{box-sizing:border-box}
     body{
       margin:0;background:
@@ -29,10 +27,9 @@
       padding:24px
     }
     .container{max-width:1100px;margin:0 auto;display:grid;gap:18px}
-
     .header{
       display:flex;justify-content:space-between;align-items:center;
-      border-bottom:1px solid var(--border);padding-bottom:12px
+      border-bottom:1px solid var(--border);padding-bottom:12px;position:relative
     }
     h1{
       margin:0;display:flex;align-items:center;gap:.6rem;
@@ -41,7 +38,6 @@
     a{color:var(--primary);text-decoration:none;font-weight:700}
     a:hover{text-decoration:underline}
     .nav{display:flex;gap:12px;flex-wrap:wrap}
-
     .card{
       background:var(--card);border:1px solid var(--border);border-radius:12px;
       padding:18px;box-shadow:var(--shadow);border-top:3px solid var(--primary)
@@ -50,33 +46,28 @@
       margin:0 0 .6rem;font:700 1.2rem 'Caudex',serif;color:var(--bright)
     }
     .muted{color:var(--muted)}
-
     .flash{
       padding:12px 14px;border-radius:10px;border:1px solid var(--primary);
       background:rgba(61,126,166,.14);color:var(--bright);font-weight:700
     }
     .flash.error{border-color:var(--danger);background:rgba(212,74,58,.16)}
     .flash.success{border-color:var(--success);background:rgba(70,164,144,.16);color:#e9fbf6}
-
     table{width:100%;border-collapse:collapse}
     th,td{padding:12px 14px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
     th{color:var(--muted);font:700 .85rem 'Caudex',serif;letter-spacing:.03em;text-transform:uppercase}
-
     .row-actions{display:flex;gap:10px;flex-wrap:wrap}
     label{display:block;font-weight:600;margin-bottom:6px}
-    input[type=text]{
+    input[type=text],input[type=url]{
       padding:10px;border-radius:10px;border:1px solid var(--border);
       background:var(--alt);color:var(--bright);min-width:220px
     }
     input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 4px var(--ring)}
-
     button{
       padding:10px 12px;border:0;border-radius:10px;background:var(--primary);color:#0c1720;
       font-weight:800;cursor:pointer;font-family:'Caudex',serif;transition:background-color .2s
     }
     button:hover{background:var(--primary-hover)}
     button[disabled]{opacity:.7;cursor:not-allowed}
-
     code{background:var(--alt);padding:3px 6px;border-radius:8px;border:1px solid var(--border)}
     .pill{
       display:inline-block;padding:4px 8px;border-radius:999px;border:1px solid var(--border);
@@ -85,33 +76,45 @@
     .grid-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}
     .inline{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
     .icon-thumb{width:28px;height:28px;border-radius:6px;border:1px solid var(--border);object-fit:contain;background:#0c0e11}
-
-    /* a11y helper the template already references */
     .visually-hidden{
-      position:absolute !important; width:1px; height:1px; margin:-1px; padding:0;
-      overflow:hidden; clip:rect(0 0 1px 1px); clip-path:inset(50%); border:0;
+      position:absolute !important;width:1px;height:1px;margin:-1px;padding:0;
+      overflow:hidden;clip:rect(0 0 1px 1px);clip-path:inset(50%);border:0;
+    }
+    /* Mobile nav */
+    .menu-toggle{display:none}
+    @media(max-width:992px){
+      .nav-links{
+        display:none;position:absolute;top:85px;right:24px;background:var(--card);
+        border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);
+        padding:12px;flex-direction:column;gap:0;z-index:1000;width:220px;
+      }
+      .nav-links.is-open{display:flex}
+      .nav-links a{padding:12px 16px;border-radius:8px}
+      .nav-links a:hover{background:var(--alt);text-decoration:none}
+      .menu-toggle{display:block;background:none;border:none;padding:8px;cursor:pointer;color:var(--muted)}
+      .menu-toggle:hover{color:var(--bright)}
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <!-- Header / nav -->
     <div class="header">
       <h1>Manage Titles</h1>
-      <div class="nav">
-        <a href="{{ url_for('admin.dashboard') }}">Dashboard</a>
-        <a href="{{ url_for('admin.reservations_page') }}">Reservations</a>
-        <a href="{{ url_for('admin.servers_page') }}">Servers</a>
-        <a href="{{ url_for('admin.logout') }}">Logout</a>
-      </div>
+      <nav class="nav" aria-label="Admin navigation">
+        <div class="nav-links" id="nav-links">
+          <a href="{{ url_for('admin.dashboard') }}">Dashboard</a>
+          <a href="{{ url_for('admin.reservations_page') }}">Reservations</a>
+          <a href="{{ url_for('admin.servers_page') }}">Servers</a>
+          <a href="{{ url_for('admin.logout') }}">Logout</a>
+        </div>
+        <button class="menu-toggle" id="menu-toggle" aria-label="Open navigation menu" aria-expanded="false" aria-controls="nav-links">☰</button>
+      </nav>
     </div>
 
-    <!-- Flashes -->
     {% for category, message in get_flashed_messages(with_categories=True) %}
-      <div class="flash {{ category }}" role="alert">{{ message|e }}</div>
+      <div class="flash {{ category }}" role="alert" aria-live="polite">{{ message|e }}</div>
     {% endfor %}
 
-    <!-- Add Title -->
     <div class="card">
       <h2>Add Title</h2>
       <p class="muted" style="margin-top:.25rem">Create a new title. “Guardian of Harmony” is always non-requestable (enforced server-side).</p>
@@ -119,11 +122,11 @@
         <input type="hidden" name="action" value="create" />
         <div>
           <label for="new_name">Title name</label>
-          <input id="new_name" name="name" type="text" placeholder="e.g. Master Builder" required />
+          <input id="new_name" name="name" type="text" placeholder="e.g. Master Builder" required pattern=".*\S.*" />
         </div>
         <div>
           <label for="new_icon">Icon URL (optional)</label>
-          <input id="new_icon" name="icon_url" type="text" placeholder="/static/icons/… or https://…" />
+          <input id="new_icon" name="icon_url" type="url" placeholder="/static/icons/… or https://…" pattern="^(/|(https?:)//).+" inputmode="url" />
         </div>
         <div class="inline">
           <div>
@@ -135,11 +138,9 @@
       </form>
     </div>
 
-    <!-- Titles table -->
     <div class="card">
       <h2>Titles</h2>
       <p class="muted" style="margin-top:.25rem">Toggle requestability, rename titles, or set custom icon paths/URLs.</p>
-
       <table role="table">
         <thead>
           <tr>
@@ -172,7 +173,6 @@
               </td>
               <td>
                 <div class="row-actions">
-                  <!-- Toggle requestable (disabled for Harmony in UI; server still enforces) -->
                   <form action="{{ url_for('admin.titles_page') }}" method="POST">
                     <input type="hidden" name="action" value="toggle_requestable" />
                     <input type="hidden" name="name" value="{{ t.name }}" />
@@ -180,8 +180,6 @@
                       {{ 'Make Unrequestable' if t.requestable else 'Make Requestable' }}
                     </button>
                   </form>
-
-                  <!-- Rename -->
                   <form action="{{ url_for('admin.titles_page') }}" method="POST" autocomplete="off" novalidate>
                     <input type="hidden" name="action" value="rename" />
                     <input type="hidden" name="old_name" value="{{ t.name }}" />
@@ -189,13 +187,11 @@
                     <input id="rn_{{ loop.index }}" type="text" name="new_name" placeholder="New name…" required />
                     <button type="submit">Rename</button>
                   </form>
-
-                  <!-- Update icon -->
                   <form action="{{ url_for('admin.titles_page') }}" method="POST" autocomplete="off" novalidate>
                     <input type="hidden" name="action" value="icon" />
                     <input type="hidden" name="name" value="{{ t.name }}" />
                     <label for="ic_{{ loop.index }}" class="visually-hidden">Icon URL for {{ t.name }}</label>
-                    <input id="ic_{{ loop.index }}" type="text" name="icon_url" placeholder="/static/icons/… or https://…" />
+                    <input id="ic_{{ loop.index }}" type="url" name="icon_url" placeholder="/static/icons/… or https://…" pattern="^(/|(https?:)//).+" inputmode="url" />
                     <button type="submit">Save Icon</button>
                   </form>
                 </div>
@@ -208,5 +204,25 @@
       </table>
     </div>
   </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function(){
+      const t=document.getElementById('menu-toggle'), n=document.getElementById('nav-links');
+      if(t&&n){
+        t.addEventListener('click',function(){
+          const e=this.getAttribute('aria-expanded')==='true';
+          this.setAttribute('aria-expanded',String(!e));
+          n.classList.toggle('is-open');
+        });
+        document.addEventListener('click',function(ev){
+          const inside=n.contains(ev.target)||t.contains(ev.target);
+          if(!inside&&n.classList.contains('is-open')){
+            n.classList.remove('is-open');
+            t.setAttribute('aria-expanded','false');
+          }
+        });
+      }
+    });
+  </script>
 </body>
 </html>

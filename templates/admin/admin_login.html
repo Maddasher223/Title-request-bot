@@ -6,14 +6,13 @@
   <meta name="color-scheme" content="dark" />
   <title>Admin Login</title>
 
-  <!-- Fonts: match admin/dashboard (Caudex + Inter) -->
+  <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Caudex:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 
   <style>
     :root{
-      /* Match admin palette */
       --bg:#0f141a; --card:#111821; --alt:#0c1218; --border:#2a3a49;
       --text:#e7edf4; --muted:#9cb0c3; --bright:#ffffff;
       --primary:#3d7ea6; --primary-hover:#336f93; --ring:rgba(61,126,166,.35);
@@ -70,13 +69,9 @@
     .toggle-password:hover{color:var(--bright)}
     .toggle-password svg{width:20px;height:20px}
 
-    /* NEW: hide eye while there is content so it never overlaps typing */
-    .input-wrapper.has-value .toggle-password{
-      opacity:0; pointer-events:none;
-    }
-    .input-wrapper.has-value input{
-      padding-right:14px; /* reclaim space when eye is hidden */
-    }
+    /* Hide eye when input has value so it doesn’t overlap */
+    .input-wrapper.has-value .toggle-password{opacity:0;pointer-events:none;}
+    .input-wrapper.has-value input{padding-right:14px}
 
     button{
       width:100%;padding:14px;border:none;border-radius:10px;
@@ -131,7 +126,6 @@
     {% endwith %}
 
     <form action="{{ url_for('admin.login', next=request.args.get('next')) }}" method="POST" autocomplete="off" novalidate>
-      <!-- If using CSRF, include it here -->
       <div class="field">
         <label for="pin">Password</label>
         <div class="input-wrapper" id="pin-wrapper">
@@ -167,7 +161,7 @@
       const eyeOpen = document.getElementById('eye-open');
       const eyeClosed = document.getElementById('eye-closed');
 
-      // 1) Prevent double-submit and show loading state
+      // Prevent double-submit and show loading state
       if (form && btn) {
         form.addEventListener('submit', function(){
           btn.disabled = true;
@@ -175,12 +169,11 @@
         });
       }
 
-      // 2) Live "has-value" class to hide the eye while typing
+      // Live "has-value" class to hide the eye while typing
       function refreshHasValue(){
         if (!wrapper) return;
         const hasValue = !!(passwordInput && passwordInput.value.length);
         wrapper.classList.toggle('has-value', hasValue);
-        // if the eye is hidden, also make it non-focusable for a11y
         if (toggleBtn) {
           const hidden = wrapper.classList.contains('has-value');
           toggleBtn.tabIndex = hidden ? -1 : 0;
@@ -191,33 +184,24 @@
         ['input','focus','blur','change'].forEach(ev => {
           passwordInput.addEventListener(ev, refreshHasValue);
         });
-        // initial state
         refreshHasValue();
       }
 
-      // 3) Password visibility toggle (keeps focus/caret)
+      // Password visibility toggle (keeps focus/caret)
       if (toggleBtn && passwordInput && eyeOpen && eyeClosed) {
-        // Keep focus on input (no caret jump)
         toggleBtn.addEventListener('mousedown', function (e) { e.preventDefault(); });
-
-        // Keyboard: Space/Enter toggles
         toggleBtn.addEventListener('keydown', function (e) {
           if (e.key === ' ' || e.key === 'Enter') {
             e.preventDefault();
             toggleBtn.click();
           }
         });
-
         toggleBtn.addEventListener('click', function () {
           const isPassword = passwordInput.type === 'password';
           passwordInput.type = isPassword ? 'text' : 'password';
-
-          // Swap icons
           eyeOpen.style.display = isPassword ? 'none' : 'block';
           eyeClosed.style.display = isPassword ? 'block' : 'none';
           toggleBtn.setAttribute('aria-label', isPassword ? 'Hide password' : 'Show password as plain text.');
-
-          // Restore focus & caret at end
           try {
             const pos = passwordInput.value.length;
             passwordInput.focus({ preventScroll: true });
@@ -228,7 +212,7 @@
         });
       }
 
-      // 4) UX copy fix: change any "pin" wording to "password" in flashed messages
+      // Copy tweak: change any "pin" wording to "password" in flashed messages
       const flashes = document.querySelectorAll('.flash');
       flashes.forEach(el => {
         const t = el.textContent;

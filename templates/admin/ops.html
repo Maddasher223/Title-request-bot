@@ -132,7 +132,7 @@
     </div>
 
     {% for category, message in get_flashed_messages(with_categories=True) %}
-      <div class="flash {{ category|e }}" role="status" aria-live="polite">{{ message }}</div>
+      <div class="flash {{ category|e }}" role="status" aria-live="polite">{{ message|e }}</div>
     {% endfor %}
 
     <div class="grid">
@@ -159,7 +159,7 @@
             <thead><tr><th>Title</th><th>Holder</th><th>Expires</th></tr></thead>
             <tbody>
               {% for a in active_titles %}
-                <tr><td><strong>{{ a.title }}</strong></td><td>{{ a.holder }}</td><td>{{ a.expires }}</td></tr>
+                <tr><td><strong>{{ a.title|e }}</strong></td><td>{{ a.holder|e }}</td><td>{{ a.expires|e }}</td></tr>
               {% endfor %}
             </tbody>
           </table>
@@ -171,11 +171,12 @@
 
     <div class="card">
       <h2>Live Title Controls</h2>
-      <p class="muted">Use these actions for immediate, one-off changes to live titles. Timed titles will auto-expire after <strong>{{ shift_hours }}</strong> hour(s).</p>
+      <p class="muted">Use these actions for immediate, one-off changes to live titles. Timed titles will auto-expire after <strong>{{ shift_hours|e }}</strong> hour(s).</p>
 
       <div class="action-grid">
         <div class="action-group">
           <form action="{{ url_for('admin.manual_assign') }}" method="POST" autocomplete="off" novalidate>
+            <!-- If using CSRF, include token here -->
             <label>Assign Guardian of Harmony</label>
             <p class="muted-label">This title does not expire.</p>
             <div class="form-row">
@@ -196,6 +197,7 @@
 
         <div class="action-group">
           <form action="{{ url_for('admin.manual_assign') }}" method="POST" autocomplete="off" novalidate>
+            <!-- CSRF token if enabled -->
             <label>Assign a Timed Title Now</label>
             <p class="muted-label">Expires after the current shift duration.</p>
             <div class="form-row">
@@ -203,7 +205,7 @@
                 <select name="title" required>
                   <option value="" disabled selected>Select title…</option>
                   {% for t in requestable_titles %}
-                    <option value="{{ t }}">{{ t }}</option>
+                    <option value="{{ t|e }}">{{ t|e }}</option>
                   {% endfor %}
                 </select>
               </div>
@@ -222,6 +224,7 @@
 
         <div class="action-group">
           <form action="{{ url_for('admin.force_release') }}" method="POST">
+            <!-- CSRF token if enabled -->
             <label>Force Release a Live Title</label>
             <p class="muted-label">Immediately makes the selected title available.</p>
             <div class="form-row">
@@ -230,7 +233,7 @@
                   <option value="" disabled selected>Select title…</option>
                   <option value="Guardian of Harmony">Guardian of Harmony</option>
                   {% for t in requestable_titles %}
-                    <option value="{{ t }}">{{ t }}</option>
+                    <option value="{{ t|e }}">{{ t|e }}</option>
                   {% endfor %}
                 </select>
               </div>
@@ -249,22 +252,23 @@
     <div class="card">
       <h2>Schedule a Future Slot</h2>
       <p class="muted">
-        Creates or updates a reservation. Allowed times are constrained to the current grid (every {{ shift_hours }}h):
-        {% for s in slots %}<code>{{ s }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+        Creates or updates a reservation. Allowed times are constrained to the current grid (every {{ shift_hours|e }}h):
+        {% for s in slots %}<code>{{ s|e }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
       </p>
       <form action="{{ url_for('admin.manual_set_slot') }}" method="POST" autocomplete="off" novalidate style="margin-top:20px;">
+        <!-- CSRF token if enabled -->
         <div class="form-row">
           <div><label>Title</label>
             <select name="title" required>
               <option value="" disabled selected>Select title…</option>
-              {% for t in requestable_titles %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+              {% for t in requestable_titles %}<option value="{{ t|e }}">{{ t|e }}</option>{% endfor %}
             </select>
           </div>
           <div><label>IGN</label><input type="text" name="ign" placeholder="In-Game Name" required /></div>
-          <div><label>Date (UTC)</label><input type="date" name="date" value="{{ today }}" required /></div>
+          <div><label>Date (UTC)</label><input type="date" name="date" value="{{ today|e }}" required /></div>
           <div><label>Slot (UTC)</label>
             <select name="slot" required>
-              {% for s in slots %}<option value="{{ s }}">{{ s }} UTC</option>{% endfor %}
+              {% for s in slots %}<option value="{{ s|e }}">{{ s|e }} UTC</option>{% endfor %}
             </select>
           </div>
         </div>

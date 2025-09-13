@@ -22,7 +22,7 @@ class ActiveTitle(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title_name = db.Column(db.String, ForeignKey("titles.name"), nullable=False, unique=True, index=True)
     holder = db.Column(db.String(80), nullable=False)
-    claim_at = db.Column(db.DateTime(timezone=True), nullable=False)   # UTC
+    claim_at = db.Column(db.DateTime(timezone=True), nullable=False)   # UTC aware
     expiry_at = db.Column(db.DateTime(timezone=True), nullable=True)   # None for Harmony
 
     def __repr__(self):
@@ -40,8 +40,8 @@ class Reservation(db.Model):
     # Legacy string timestamp (kept for compatibility)
     slot_ts = db.Column(db.String(32), nullable=True)
 
-    # Canonical slot datetime (UTC, seconds=0). timezone=False because we store normalized UTC.
-    slot_dt = db.Column(db.DateTime(timezone=False), index=True)
+    # Canonical slot datetime (UTC, seconds=0), timezone-aware for Postgres safety
+    slot_dt = db.Column(db.DateTime(timezone=True), index=True)
 
     # Token used for self-serve cancellations
     cancel_token = db.Column(db.String(64), unique=True, index=True)

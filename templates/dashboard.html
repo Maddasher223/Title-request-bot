@@ -190,7 +190,7 @@
       <h2>Reserve a {{ shift_hours|default(12) }}-hour Slot</h2>
       <p class="muted" style="font-size:.95rem;margin-top:.25rem;">
         All times are in UTC. Reach the <strong>Guardian of Harmony</strong> if you have questions.
-        For coordinates, please provide in the following format: <code>100:200</code>.
+        For coordinates, you may enter <code>123:456</code> or <code>-</code> if unknown.
       </p>
       <form action="{{ url_for('book_slot') }}" method="POST" novalidate>
         {% set time_options = hours if hours is defined else (slots if slots is defined else []) %}
@@ -210,7 +210,8 @@
           </div>
           <div>
             <label for="coords">Coordinates (X:Y)</label>
-            <input id="coords" type="text" name="coords" placeholder="123:456" pattern="^\s*\d+\s*:\s*\d+\s*$" required />
+            <!-- Allow either X:Y or '-' to match server rules -->
+            <input id="coords" type="text" name="coords" placeholder="123:456 or -" pattern="^\s*(\d+\s*:\s*\d+|-)\s*$" required />
           </div>
           <div>
             <label for="date">Date (UTC)</label>
@@ -249,7 +250,7 @@
 
     <!-- Upcoming Reservations -->
     <section class="card">
-      <h2>Upcoming Reservations (Next {{ days|length }})</h2>
+      <h2>Upcoming Reservations (Next {{ days|length }} days)</h2>
 
       <div class="filter-row">
         <label for="filter-title">Filter by title:</label>

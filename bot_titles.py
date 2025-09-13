@@ -61,7 +61,7 @@ def _is_valid_time_utc(s: str) -> bool:
 
 
 def _headers():
-    return {"User-Agent": "title-bot/1.1 (+discord)"}  # helpful for server logs
+    return {"User-Agent": "title-bot/1.1 (+discord)"}
 
 
 async def _fetch_json(session: aiohttp.ClientSession, base: str, path: str) -> Optional[object]:
@@ -87,21 +87,18 @@ async def _get_requestable(session: aiohttp.ClientSession) -> List[str]:
     return REQUESTABLE_TITLES_FALLBACK
 
 
+# ---------- FIXED: module-level autocomplete (no 'self' required) ----------
+async def _title_autocomplete(interaction: discord.Interaction, current: str):
+    async with aiohttp.ClientSession() as session:
+        all_titles = await _get_requestable(session)
+    current_lower = (current or "").lower()
+    filtered = [t for t in all_titles if current_lower in t.lower()]
+    return [app_commands.Choice(name=t, value=t) for t in filtered[:25]]
+
+
 class TitlesGroup(app_commands.Group):
     def __init__(self):
         super().__init__(name="titles", description="Title tools and quick helpers")
-
-    # ---------- Autocomplete for titles ----------
-    async def title_autocomplete(
-        self,
-        interaction: discord.Interaction,
-        current: str,
-    ):
-        async with aiohttp.ClientSession() as session:
-            all_titles = await _get_requestable(session)
-        current_lower = (current or "").lower()
-        filtered = [t for t in all_titles if current_lower in t.lower()]
-        return [app_commands.Choice(name=t, value=t) for t in filtered[:25]]
 
     # ---------- /titles reserve ----------
     @app_commands.command(name="reserve", description="Reserve a title slot")
@@ -112,7 +109,7 @@ class TitlesGroup(app_commands.Group):
         date_utc="Date (UTC) in YYYY-MM-DD",
         time_utc="Time (UTC) in HH:MM (00:00, 12:00)",
     )
-    @app_commands.autocomplete(title=title_autocomplete)
+    @app_commands.autocomplete(title=_title_autocomplete)
     async def reserve(
         self,
         interaction: discord.Interaction,
@@ -134,11 +131,7 @@ class TitlesGroup(app_commands.Group):
         title = (title or "").strip()
         ign = (ign or "").strip()
         coords_raw = (coords or "").strip()
-        # Web form treats coords as optional. Accept '', '-' or X:Y. Convert blank -> '-'
-        if not coords_raw or coords_raw == "-":
-            coords_norm = "-"
-        else:
-            coords_norm = coords_raw
+        coords_norm = "-" if not coords_raw or coords_raw == "-" else coords_raw
 
         async with aiohttp.ClientSession() as session:
             requestable = await _get_requestable(session)
@@ -231,7 +224,6 @@ class TitlesGroup(app_commands.Group):
 
         def tz_line(label: str, tzname: str) -> str:
             try:
-                # Python 3.9+: zoneinfo
                 from zoneinfo import ZoneInfo
                 local = base.astimezone(ZoneInfo(tzname))
                 badge = ""
@@ -274,12 +266,11 @@ class TitlesGroup(app_commands.Group):
         await interaction.followup.send(msg, ephemeral=True)
 
     # ---------- Admin placeholders (graceful UX) ----------
-    # These reply politely until you add small JSON endpoints to your Flask app.
     admin = app_commands.Group(name="admin", description="Admin actions (requires server API enabled)")
 
     @admin.command(name="force_release", description="(admin) Force-release a title")
     @app_commands.describe(title="Title to release now")
-    @app_commands.autocomplete(title=title_autocomplete)
+    @app_commands.autocomplete(title=_title_autocomplete)
     async def admin_force_release(self, interaction: discord.Interaction, title: str):
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send(
@@ -294,7 +285,7 @@ class TitlesGroup(app_commands.Group):
         ign="IGN to assign",
         hours="Duration (hours) for timed titles; leave blank for default",
     )
-    @app_commands.autocomplete(title=title_autocomplete)
+    @app_commands.autocomplete(title=_title_autocomplete)
     async def admin_assign(self, interaction: discord.Interaction, title: str, ign: str, hours: Optional[int] = None):
         await interaction.response.defer(ephemeral=True)
         await interaction.followup.send(

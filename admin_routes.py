@@ -1,4 +1,3 @@
-# admin_routes.py
 from __future__ import annotations
 
 import io
@@ -96,7 +95,8 @@ def register_admin(app, deps: dict):
                 nxt = request.args.get("next") or url_for("admin.dashboard")
                 return redirect(nxt)
             flash("Invalid PIN.", "error")
-        return render_template("login.html")
+        # NOTE: template file is admin_login.html in /templates/admin
+        return render_template("admin_login.html")
 
     @admin_bp.route("/logout")
     def logout():
@@ -253,7 +253,11 @@ def register_admin(app, deps: dict):
     @admin_required
     def reservations_page():
         q = (request.args.get("q") or "").strip()
-        page = max(1, int(request.args.get("page", "1")))
+        try:
+            page = int(request.args.get("page", "1"))
+        except ValueError:
+            page = 1
+        page = max(1, page)
         per_page = 25
 
         query = M.Reservation.query

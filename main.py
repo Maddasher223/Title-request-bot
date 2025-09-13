@@ -40,7 +40,12 @@ from db_utils import (
     schedule_lookup,
 )
 
-from web_routes import register_routes
+# ---- web routes (optional; shim if file missing) -----------------
+try:
+    from web_routes import register_routes as _register_routes
+except Exception:
+    _register_routes = None
+
 from admin_routes import register_admin
 
 # ===== Airtable (optional; safe import) =====
@@ -143,6 +148,8 @@ ICON_FILES = {name: data.get('image') for name, data in TITLES_CATALOG.items()}
 # -------------------- DB URL normalization --------------------
 def _normalize_db_uri(raw: str | None) -> str:
     if not raw:
+        # NOTE: This is a relative path. For an absolute path under Flask's instance dir use:
+        # f"sqlite:///{os.path.join(app.instance_path, 'app.db')}"
         return "sqlite:///instance/app.db"
     uri = raw.strip()
     if uri.startswith("postgres://"):
@@ -427,7 +434,8 @@ def send_webhook_notification(data, reminder: bool = False, guild_id: int | None
         }]
     }
     try:
-        requests.post(webhook_url, json=payload, timeout=8).raise_for_status()
+        resp = requests.post(webhook_url, json=payload, timeout=8)
+        resp.raise_for_status()
     except requests.exceptions.RequestException as e:
         logger.error("Webhook send failed: %s", e)
 
@@ -700,6 +708,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         pass
 
 def _time_choices():
+    # evaluated at import; uses default if DB not ready
     slots = compute_slots(_safe_shift_hours())
     return [app_commands.Choice(name=f"{s} UTC", value=s) for s in slots]
 
@@ -845,7 +854,6 @@ class TitleCog(commands.Cog, name="TitleManager"):
 
     @tasks.loop(seconds=60)
     async def title_check_loop(self):
-        await self.bot.wait_until_ready()
         now = now_utc()
 
         to_release = await asyncio.to_thread(_scan_expired_titles, now)
@@ -869,6 +877,10 @@ class TitleCog(commands.Cog, name="TitleManager"):
             activate_slot(title_name, ign, start_dt)
             await self.announce(f"AUTO-ACTIVATED: **{title_name}** → **{ign}** (slot start reached).")
             logger.info("[AUTO-ACTIVATE] %s -> %s at %s", title_name, ign, start_dt.isoformat())
+
+    @title_check_loop.before_loop
+    async def _wait_ready(self):
+        await self.bot.wait_until_ready()
 
     @commands.command(help="List all titles and their current status.")
     async def titles(self, ctx):
@@ -936,10 +948,7 @@ def _sqlite_pragmas(dbapi_connection, connection_record):
         pass
 
 def _rehydrate_state_from_db_actives():
-    """
-    On startup/redeploy, load DB ActiveTitle into the legacy JSON state,
-    so the web/discord features depending on state don't show empty data.
-    """
+    """On startup, mirror DB ActiveTitle into the legacy JSON state."""
     with ensure_app_context():
         rows = ActiveTitle.query.all()
     with state_lock:
@@ -960,6 +969,10 @@ def _rehydrate_state_from_db_actives():
 def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("FLASK_SECRET", "a-strong-dev-secret-key")
+    if app.secret_key == "a-strong-dev-secret-key":
+        logger.warning("FLASK_SECRET is using the default dev key. Set FLASK_SECRET for production.")
+    if ADMIN_PIN == "letmein":
+        logger.warning("ADMIN_PIN is using the default value. Set a secure ADMIN_PIN for production.")
 
     # DB URI & engine opts
     raw_uri = os.getenv("DATABASE_URL")
@@ -1010,7 +1023,7 @@ def create_app() -> Flask:
         try:
             cols = [c["name"] for c in insp.get_columns("reservation")]
             if "cancel_token" not in cols:
-                db.session.execute(text("ALTER TABLE reservation ADD COLUMN cancel_token VARCHAR(64)"))
+                db.session.execute(text("ALTER TABLE reservation ADD COLUMN slot_dt TIMESTAMP WITH TIME ZONE"))
                 db.session.commit()
             db.session.execute(text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uix_reservation_cancel_token ON reservation(cancel_token)"
@@ -1128,36 +1141,39 @@ def create_app() -> Flask:
             logger.warning("Could not load ServerConfig from DB: %s", e)
 
         # Register routes (single pass)
-        register_routes(
-            app=app,
-            deps=dict(
-                ORDERED_TITLES=ORDERED_TITLES, TITLES_CATALOG=TITLES_CATALOG,
-                REQUESTABLE=REQUESTABLE, ADMIN_PIN=ADMIN_PIN,
-                ICON_FILES=ICON_FILES,
-                state=state, save_state=save_state_async,
-                log_to_csv=log_to_csv, log_action=log_action,
-                parse_iso_utc=parse_iso_utc, now_utc=now_utc,
-                iso_slot_key_naive=iso_slot_key_naive,
-                title_is_vacant_now=title_is_vacant_now,
-                get_shift_hours=_safe_shift_hours,
-                bot=bot, state_lock=state_lock,
-                send_webhook_notification=send_webhook_notification,
-                db=db,
-                models=dict(
-                    Title=Title, Reservation=Reservation, ActiveTitle=ActiveTitle, RequestLog=RequestLog, Setting=Setting
-                ),
-                db_helpers=dict(
-                    compute_slots=compute_slots,
-                    requestable_title_names=requestable_title_names,
-                    title_status_cards=title_status_cards,
-                    schedules_by_title=schedules_by_title,
-                    set_shift_hours=db_set_shift_hours,
-                    schedule_lookup=schedule_lookup,
-                ),
-                reserve_slot_core=_reserve_slot_core,
-                airtable_upsert=airtable_upsert,
+        if _register_routes is not None:
+            _register_routes(
+                app=app,
+                deps=dict(
+                    ORDERED_TITLES=ORDERED_TITLES, TITLES_CATALOG=TITLES_CATALOG,
+                    REQUESTABLE=REQUESTABLE, ADMIN_PIN=ADMIN_PIN,
+                    ICON_FILES=ICON_FILES,
+                    state=state, save_state=save_state_async,
+                    log_to_csv=log_to_csv, log_action=log_action,
+                    parse_iso_utc=parse_iso_utc, now_utc=now_utc,
+                    iso_slot_key_naive=iso_slot_key_naive,
+                    title_is_vacant_now=title_is_vacant_now,
+                    get_shift_hours=_safe_shift_hours,
+                    bot=bot, state_lock=state_lock,
+                    send_webhook_notification=send_webhook_notification,
+                    db=db,
+                    models=dict(
+                        Title=Title, Reservation=Reservation, ActiveTitle=ActiveTitle, RequestLog=RequestLog, Setting=Setting
+                    ),
+                    db_helpers=dict(
+                        compute_slots=compute_slots,
+                        requestable_title_names=requestable_title_names,
+                        title_status_cards=title_status_cards,
+                        schedules_by_title=schedules_by_title,
+                        set_shift_hours=db_set_shift_hours,
+                        schedule_lookup=schedule_lookup,
+                    ),
+                    reserve_slot_core=_reserve_slot_core,
+                    airtable_upsert=airtable_upsert,
+                )
             )
-        )
+        else:
+            logger.warning("web_routes.py not found. Public web routes were not registered.")
 
         register_admin(
             app,
