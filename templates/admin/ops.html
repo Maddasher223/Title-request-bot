@@ -178,7 +178,6 @@
         <!-- Assign GOH (permanent) -->
         <div class="action-group">
           <form action="{{ url_for('admin.manual_assign') }}" method="POST" autocomplete="off" novalidate>
-            <!-- If using CSRF, include token here -->
             <label>Assign Guardian of Harmony</label>
             <p class="muted-label">This title does not expire.</p>
             <div class="form-row">
@@ -197,10 +196,9 @@
           </form>
         </div>
 
-        <!-- Assign timed title (new reservation starting now) -->
+        <!-- Assign timed title (starts now) -->
         <div class="action-group">
           <form action="{{ url_for('admin.manual_assign') }}" method="POST" autocomplete="off" novalidate>
-            <!-- CSRF token if enabled -->
             <label>Assign a Timed Title Now</label>
             <p class="muted-label">Expires after the current shift duration.</p>
             <div class="form-row">
@@ -225,39 +223,29 @@
           </form>
         </div>
 
-        <!-- NEW: Transfer currently-held Guardian (keep expiry by default) -->
+        <!-- Force-assign any Guardian (Air/Earth/Fire/Water) -->
         <div class="action-group">
-          <form action="{{ url_for('admin.transfer_guardian') }}" method="POST" autocomplete="off" novalidate>
-            <!-- CSRF token if enabled -->
-            <label>Transfer Current Guardian</label>
-            <p class="muted-label">Reassign an already-held Guardian title to a new IGN. Keeps the current expiration unless you choose to reset it.</p>
+          <form action="{{ url_for('admin.manual_assign') }}" method="POST" autocomplete="off" novalidate>
+            <label>Force-Assign a Guardian (Elemental)</label>
+            <p class="muted-label">Sets the holder immediately. These Guardians expire after {{ shift_hours|e }} hour(s).</p>
             <div class="form-row">
               <div>
                 <select name="title" required>
-                  <option value="" disabled selected>Select live Guardian…</option>
-                  {% for a in active_titles %}
-                    {% if a.title.startswith('Guardian of ') and a.title != 'Guardian of Harmony' %}
-                      <option value="{{ a.title|e }}">{{ a.title|e }} — currently {{ a.holder|e }}</option>
-                    {% endif %}
-                  {% endfor %}
+                  <option value="" disabled selected>Select Guardian…</option>
+                  <option value="Guardian of Air">Guardian of Air</option>
+                  <option value="Guardian of Earth">Guardian of Earth</option>
+                  <option value="Guardian of Fire">Guardian of Fire</option>
+                  <option value="Guardian of Water">Guardian of Water</option>
                 </select>
               </div>
               <div>
-                <input type="text" name="ign" placeholder="New In-Game Name" required />
+                <input type="text" name="ign" placeholder="In-Game Name" required />
               </div>
               <div class="btn-container">
-                <button type="submit" class="icon-button" title="Transfer without changing expiry">
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H7m6 4v1a2 2 0 01-2 2H6a2 2 0 01-2-2V7a2 2 0 012-2h5a2 2 0 012 2v1" /></svg>
-                  <span>Transfer</span>
+                <button type="submit" class="icon-button" title="Assign now">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3M4.5 19.5l5.25-5.25m0 0L15 19.5m-5.25-5.25V4.5" /></svg>
+                  <span>Force-Assign</span>
                 </button>
-              </div>
-            </div>
-            <div class="form-row" style="margin-top:8px">
-              <div>
-                <label class="muted" style="display:flex; gap:10px; align-items:center; font-weight:600">
-                  <input type="checkbox" name="reset_expiry" value="1" style="width:auto; height:auto" />
-                  Reset expiry to a full {{ shift_hours|e }}h from now
-                </label>
               </div>
             </div>
           </form>
@@ -266,7 +254,6 @@
         <!-- Force release -->
         <div class="action-group">
           <form action="{{ url_for('admin.force_release') }}" method="POST">
-            <!-- CSRF token if enabled -->
             <label>Force Release a Live Title</label>
             <p class="muted-label">Immediately makes the selected title available.</p>
             <div class="form-row">
@@ -298,7 +285,6 @@
         {% for s in slots %}<code>{{ s|e }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
       </p>
       <form action="{{ url_for('admin.manual_set_slot') }}" method="POST" autocomplete="off" novalidate style="margin-top:20px;">
-        <!-- CSRF token if enabled -->
         <div class="form-row">
           <div><label>Title</label>
             <select name="title" required>
@@ -336,7 +322,7 @@
           <span>Reservations</span>
         </a>
         <a href="{{ url_for('admin.servers_page') }}" class="btn" style="width:fit-content">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 17.25v-.228a4.5 4.5 0 00-.12-1.03l-2.268-9.64a3.375 3.375 0 00-3.285-2.602H7.926a3.375 3.375 0 00-3.285 2.602l-2.268 9.64a4.5 4.5 0 00-.12 1.03v.228m19.5 0a3 3 0 01-3 3H5.25a3 3 0 01-3-3m19.5 0a3 3 0 01-3-3H5.25a3 3 0 01-3 3m16.5 0h.008v.008h-.008v-.008z" /></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 17.25v-.228a4.5 4.5 0 00-.12-1.03l-2.268-9.64a3.375 3.375 0 00-3.285-2.602H7.926a3.375 3.375 0 00-3.285 2.602l-2.268 9.64a4.5 4.5 0 00-.12 1.03v.228m19.5 0a3 3 0 01-3 3H5.25a3 3 0 01-3-3m19.5 0a3 3 0 00-3-3H5.25a3 3 0 01-3 3m16.5 0h.008v.008h-.008v-.008z" /></svg>
           <span>Servers</span>
         </a>
       </div>
