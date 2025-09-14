@@ -106,7 +106,8 @@
       }
       .nav-links a{ padding:12px 16px; border-radius:8px; width:220px }
       .nav-links a:hover{ background:var(--alt); text-decoration:none }
-      .menu-toggle{ display:block; background:none; border:none; padding:8px; cursor:pointer; color:var(--muted) }
+      .menu-toggle{
+        display:block; background:none; border:none; padding:8px; cursor:pointer; color:var(--muted) }
       .menu-toggle:hover{ color:var(--bright) }
       .menu-toggle svg{ width:28px; height:28px }
       .nav-links.is-open{ display:flex }
@@ -145,7 +146,7 @@
             <span>Health Check</span>
           </a>
           <a class="btn" href="{{ url_for('dashboard') }}">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h7.5" /></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V15M8.25 21h7.5" /></svg>
             <span>Public Dashboard</span>
           </a>
         </p>
@@ -174,6 +175,7 @@
       <p class="muted">Use these actions for immediate, one-off changes to live titles. Timed titles will auto-expire after <strong>{{ shift_hours|e }}</strong> hour(s).</p>
 
       <div class="action-grid">
+        <!-- Assign GOH (permanent) -->
         <div class="action-group">
           <form action="{{ url_for('admin.manual_assign') }}" method="POST" autocomplete="off" novalidate>
             <!-- If using CSRF, include token here -->
@@ -195,6 +197,7 @@
           </form>
         </div>
 
+        <!-- Assign timed title (new reservation starting now) -->
         <div class="action-group">
           <form action="{{ url_for('admin.manual_assign') }}" method="POST" autocomplete="off" novalidate>
             <!-- CSRF token if enabled -->
@@ -222,6 +225,45 @@
           </form>
         </div>
 
+        <!-- NEW: Transfer currently-held Guardian (keep expiry by default) -->
+        <div class="action-group">
+          <form action="{{ url_for('admin.transfer_guardian') }}" method="POST" autocomplete="off" novalidate>
+            <!-- CSRF token if enabled -->
+            <label>Transfer Current Guardian</label>
+            <p class="muted-label">Reassign an already-held Guardian title to a new IGN. Keeps the current expiration unless you choose to reset it.</p>
+            <div class="form-row">
+              <div>
+                <select name="title" required>
+                  <option value="" disabled selected>Select live Guardian…</option>
+                  {% for a in active_titles %}
+                    {% if a.title.startswith('Guardian of ') and a.title != 'Guardian of Harmony' %}
+                      <option value="{{ a.title|e }}">{{ a.title|e }} — currently {{ a.holder|e }}</option>
+                    {% endif %}
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <input type="text" name="ign" placeholder="New In-Game Name" required />
+              </div>
+              <div class="btn-container">
+                <button type="submit" class="icon-button" title="Transfer without changing expiry">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H7m6 4v1a2 2 0 01-2 2H6a2 2 0 01-2-2V7a2 2 0 012-2h5a2 2 0 012 2v1" /></svg>
+                  <span>Transfer</span>
+                </button>
+              </div>
+            </div>
+            <div class="form-row" style="margin-top:8px">
+              <div>
+                <label class="muted" style="display:flex; gap:10px; align-items:center; font-weight:600">
+                  <input type="checkbox" name="reset_expiry" value="1" style="width:auto; height:auto" />
+                  Reset expiry to a full {{ shift_hours|e }}h from now
+                </label>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <!-- Force release -->
         <div class="action-group">
           <form action="{{ url_for('admin.force_release') }}" method="POST">
             <!-- CSRF token if enabled -->
@@ -294,7 +336,7 @@
           <span>Reservations</span>
         </a>
         <a href="{{ url_for('admin.servers_page') }}" class="btn" style="width:fit-content">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 17.25v-.228a4.5 4.5 0 00-.12-1.03l-2.268-9.64a3.375 3.375 0 00-3.285-2.602H7.926a3.375 3.375 0 00-3.285 2.602l-2.268 9.64a4.5 4.5 0 00-.12 1.03v.228m19.5 0a3 3 0 01-3 3H5.25a3 3 0 01-3-3m19.5 0a3 3 0 00-3-3H5.25a3 3 0 00-3 3m16.5 0h.008v.008h-.008v-.008z" /></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 17.25v-.228a4.5 4.5 0 00-.12-1.03l-2.268-9.64a3.375 3.375 0 00-3.285-2.602H7.926a3.375 3.375 0 00-3.285 2.602l-2.268 9.64a4.5 4.5 0 00-.12 1.03v.228m19.5 0a3 3 0 01-3 3H5.25a3 3 0 01-3-3m19.5 0a3 3 0 01-3-3H5.25a3 3 0 01-3 3m16.5 0h.008v.008h-.008v-.008z" /></svg>
           <span>Servers</span>
         </a>
       </div>

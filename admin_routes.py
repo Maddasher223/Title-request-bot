@@ -43,7 +43,6 @@ def register_admin(app, deps: dict):
     db = deps["db"]
 
     M = deps["models"]
-    # Allow passing a dict for models; convert to attribute-style access
     if isinstance(M, dict):
         M = SimpleNamespace(**M)
 
@@ -61,7 +60,6 @@ def register_admin(app, deps: dict):
         def wrapper(*a, **kw):
             if session.get("is_admin"):
                 return fn(*a, **kw)
-            # preserve where we were headed
             return redirect(url_for("admin.login", next=request.path))
         return wrapper
 
@@ -95,7 +93,6 @@ def register_admin(app, deps: dict):
                 nxt = request.args.get("next") or url_for("admin.dashboard")
                 return redirect(nxt)
             flash("Invalid PIN.", "error")
-        # NOTE: template file is admin_login.html in /templates/admin
         return render_template("admin_login.html")
 
     @admin_bp.route("/logout")
@@ -123,7 +120,7 @@ def register_admin(app, deps: dict):
             servers=servers,
         )
 
-    # ========== Ops panel (rich view + actions UI) ==========
+    # ========== Ops panel ==========
     @admin_bp.route("/ops")
     @admin_required
     def ops():
@@ -137,7 +134,7 @@ def register_admin(app, deps: dict):
         days = [today + timedelta(days=i) for i in range(14)]
         schedule_map = schedule_lookup(days, slots)
 
-        # Active titles summary
+        # Active titles summary for the table + transfer dropdown
         active_titles = []
         for row in M.ActiveTitle.query.all():
             expires_str = "Never"
@@ -209,9 +206,7 @@ def register_admin(app, deps: dict):
                         flash(f"Name '{new}' already exists.", "error")
                     else:
                         try:
-                            # Transaction: rename Title and propagate to dependents
                             t.name = new
-                            # Update dependent tables to keep data consistent
                             M.ActiveTitle.query.filter_by(title_name=old).update({"title_name": new})
                             M.Reservation.query.filter_by(title_name=old).update({"title_name": new})
                             db.session.commit()
@@ -230,7 +225,6 @@ def register_admin(app, deps: dict):
                 t = M.Title.query.filter_by(name=name).first()
                 if t and icon:
                     try:
-                        # very light validation; avoid empty/whitespace-only
                         if len(icon) < 2:
                             raise ValueError("Empty icon URL")
                         t.icon_url = icon
@@ -248,7 +242,7 @@ def register_admin(app, deps: dict):
         titles = M.Title.query.order_by(M.Title.name.asc()).all()
         return render_template("titles.html", titles=titles)
 
-    # ========== Reservations: search/paginate/export ==========
+    # ========== Reservations ==========
     @admin_bp.route("/reservations")
     @admin_required
     def reservations_page():
@@ -303,7 +297,7 @@ def register_admin(app, deps: dict):
             download_name="reservations.csv",
         )
 
-    # ========== Servers: CRUD + set default + test ping ==========
+    # ========== Servers: CRUD + set default + test webhook ==========
     @admin_bp.route("/servers", methods=["GET", "POST"])
     @admin_required
     def servers_page():
@@ -357,7 +351,6 @@ def register_admin(app, deps: dict):
             elif action == "set_default":
                 target = db.session.get(M.ServerConfig, gid)
                 if target:
-                    # Clear existing default(s)
                     for r in M.ServerConfig.query.filter_by(is_default=True).all():
                         r.is_default = False
                     target.is_default = True
@@ -367,7 +360,7 @@ def register_admin(app, deps: dict):
                 else:
                     flash("Unknown guild ID.", "error")
 
-            elif action == "test_ping":
+            elif action in ("test_webhook", "test_ping"):
                 _refresh_server_cache()
                 try:
                     send_webhook_notification(
@@ -379,7 +372,7 @@ def register_admin(app, deps: dict):
                             "discord_user": "Admin"
                         },
                         reminder=False,
-                        guild_id=int(gid) if gid.isdigit() else None
+                        guild_id=int(gid) if gid and gid.isdigit() else None
                     )
                     flash("Test webhook sent (check Discord).", "success")
                 except Exception as e:
@@ -444,6 +437,65 @@ def register_admin(app, deps: dict):
             flash("Internal error while assigning.", "error")
         return redirect(url_for("admin.ops"))
 
+    @admin_bp.route("/transfer-guardian", methods=["POST"])
+    @admin_required
+    def transfer_guardian():
+        """
+        Reassign a currently-held Guardian (NOT Harmony) to a new IGN.
+        Keeps the existing expiry by default; can reset to full shift via checkbox.
+        """
+        title = (request.form.get("title") or "").strip()
+        new_ign = (request.form.get("ign") or "").strip()
+        reset_expiry = bool(request.form.get("reset_expiry"))
+
+        if not title or not new_ign:
+            flash("Title and new IGN are required.", "error")
+            return redirect(url_for("admin.ops"))
+
+        # Safety: only allow Guardian titles other than Harmony
+        if not title.startswith("Guardian of ") or title == "Guardian of Harmony":
+            flash("Only non-Harmony Guardian titles can be transferred here.", "error")
+            return redirect(url_for("admin.ops"))
+
+        row = M.ActiveTitle.query.filter_by(title_name=title).first()
+        if not row:
+            flash("That Guardian title is not currently active.", "error")
+            return redirect(url_for("admin.ops"))
+
+        try:
+            now = now_utc()
+            row.holder = new_ign
+            # Set new claim time to now; expiry logic below
+            row.claim_at = now
+
+            if reset_expiry:
+                row.expiry_at = now + timedelta(hours=int(get_shift_hours()))
+            # else: keep existing expiry_at (could be None for permanent, though Guardians are normally timed)
+
+            db.session.commit()
+
+            if airtable_upsert:
+                try:
+                    airtable_upsert("assignment", {
+                        "Title": title,
+                        "IGN": new_ign,
+                        "Coordinates": "-",
+                        "SlotStartUTC": row.claim_at,
+                        "SlotEndUTC": row.expiry_at,
+                        "Source": "Admin Transfer",
+                        "DiscordUser": "Admin",
+                    })
+                except Exception:
+                    pass
+
+            flash(f"Transferred '{title}' to {new_ign} " + ("(expiry reset)." if reset_expiry else "(kept current expiry)."), "success")
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.exception("transfer_guardian failed: %s", e)
+            flash("Internal error while transferring Guardian.", "error")
+
+        return redirect(url_for("admin.ops"))
+
     @admin_bp.route("/manual-set-slot", methods=["POST"])
     @admin_required
     def manual_set_slot():
@@ -471,8 +523,7 @@ def register_admin(app, deps: dict):
             flash("Invalid date or slot format.", "error")
             return redirect(url_for("admin.ops"))
 
-        # Optional guard: ensure manual slot aligns to current grid
-        allowed = set(compute_slots(int(get_shift_hours())))
+        allowed = set(H["compute_slots"](int(get_shift_hours())))
         if slot not in allowed:
             flash(f"Slot must be one of {sorted(allowed)} UTC.", "error")
             return redirect(url_for("admin.ops"))
@@ -511,7 +562,6 @@ def register_admin(app, deps: dict):
             flash("Internal error while writing reservation.", "error")
             return redirect(url_for("admin.ops"))
 
-        # keep ActiveTitle in sync if the slot has started
         try:
             if start_dt <= now_utc():
                 row = M.ActiveTitle.query.filter_by(title_name=title).first()
@@ -613,7 +663,6 @@ def register_admin(app, deps: dict):
             flash("Internal error while releasing reservation.", "error")
             return redirect(url_for("admin.ops"))
 
-        # Optional live release if it matches the active slot
         if also_release_live:
             try:
                 row = M.ActiveTitle.query.filter_by(title_name=title).first()
