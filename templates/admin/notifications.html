@@ -1,3 +1,4 @@
+<!-- templates/admin/notifications.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7,69 +8,188 @@
   <meta name="color-scheme" content="dark" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Caudex (headings) + Inter (body) -->
   <link href="https://fonts.googleapis.com/css2?family=Caudex:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
   <style>
-    :root{--bg:#0f141a;--card:#111821;--alt:#0c1218;--border:#2a3a49;--text:#e7edf4;--muted:#9cb0c3;--bright:#ffffff;--primary:#3d7ea6;--primary-hover:#336f93;--ring:rgba(61,126,166,.35);--success:#46a490}
-    body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 'Inter',system-ui,sans-serif;padding:24px}
-    .container{max-width:900px;margin:0 auto;display:grid;gap:24px}
-    h1{margin:0;font:700 1.8rem 'Caudex',serif;color:var(--bright)}
-    .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;border-top:3px solid var(--primary)}
-    .card.success { border-top-color: var(--success); }
-    label{display:block;font-weight:700;color:var(--muted);margin-bottom:6px}
-    input[type="text"],input[type="number"]{width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--alt);color:var(--bright)}
-    input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 4px var(--ring)}
-    .row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    .checkbox{display:flex;align-items:center;gap:10px}
-    .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border-radius:10px;background:var(--primary);color:#0a0f14;font-weight:800;border:0;cursor:pointer}
-    .btn:hover{background:var(--primary-hover)}
-    .muted{color:var(--muted)}
-    .nav a{color:var(--primary);text-decoration:none;font-weight:700;margin-right:12px}
+    :root{
+      --bg:#0f141a; --card:#111821; --alt:#0c1218; --border:#2a3a49;
+      --text:#e7edf4; --muted:#9cb0c3; --bright:#ffffff;
+      --primary:#3d7ea6; --primary-hover:#336f93; --ring:rgba(61,126,166,.35);
+      --danger:#d44a3a; --danger-hover:#bf3a2f; --success:#46a490;
+      --shadow:0 10px 40px rgba(0,0,0,.5);
+    }
+    *{ box-sizing:border-box }
+    body{
+      margin:0; background:var(--bg); color:var(--text);
+      font:16px/1.55 'Inter',system-ui,sans-serif; padding:24px
+    }
+    .container{ max-width:1000px; margin:0 auto; display:grid; gap:24px }
+
+    /* Header / nav */
+    .header{
+      display:flex; justify-content:space-between; align-items:center;
+      border-bottom:1px solid var(--border); padding-bottom:12px; position:relative;
+    }
+    h1{ margin:0; font:700 1.8rem 'Caudex',serif; color:var(--bright) }
+    .nav a{ color:var(--primary); text-decoration:none; font-weight:700 }
+    .nav a:hover{ text-decoration:underline }
+
+    /* Mobile Navigation */
+    .nav{ display:flex; gap:12px }
+    .menu-toggle{ display:none }
+    @media (max-width: 992px){
+      .nav-links{
+        display:none; position:absolute; top:85px; right:24px; background:var(--card);
+        border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow);
+        padding:12px; flex-direction:column; gap:0; z-index:1000; width:max-content; max-width:min(90vw,360px);
+      }
+      .nav-links a{ padding:12px 16px; border-radius:8px; width:220px }
+      .nav-links a:hover{ background:var(--alt); text-decoration:none }
+      .menu-toggle{ display:block; background:none; border:none; padding:8px; cursor:pointer; color:var(--muted) }
+      .menu-toggle:hover{ color:var(--bright) }
+      .menu-toggle svg{ width:28px; height:28px }
+      .nav-links.is-open{ display:flex }
+    }
+
+    /* Flash messages */
+    .flash{
+      padding:12px 14px; border-radius:10px; border:1px solid var(--primary);
+      background:rgba(61,126,166,.14); color:var(--bright); font-weight:700
+    }
+    .flash.error{ border-color:var(--danger); background:rgba(212,74,58,.16) }
+    .flash.success{ border-color:var(--success); background:rgba(70,164,144,.16); color:#e9fbf6 }
+
+    /* Cards / form */
+    .card{
+      background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px;
+      border-top:3px solid var(--primary); box-shadow:var(--shadow);
+    }
+    h2{ margin:0 0 .6rem; font:700 1.2rem 'Caudex',serif; color:var(--bright) }
+    .muted{ color:var(--muted); font-size:.95rem }
+
+    label{ display:block; font-size:.9rem; font-weight:700; color:var(--muted); margin-bottom:6px }
+    input[type="text"], input[type="number"]{
+      width:100%; padding:12px; border-radius:10px; border:1px solid var(--border);
+      background:var(--alt); color:var(--bright); font-size:1rem;
+    }
+    input:focus{ outline:none; border-color:var(--primary); box-shadow:0 0 0 4px var(--ring) }
+
+    .checkbox{ display:flex; align-items:center; gap:10px }
+    .row{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px }
+
+    .btn{
+      display:inline-flex; align-items:center; gap:8px; padding:10px 16px; border-radius:10px;
+      background:var(--primary); color:#0a0f14; font-weight:800; border:0; cursor:pointer;
+      font-family:'Caudex',serif; transition:all .2s ease-out;
+    }
+    .btn:hover{ background:var(--primary-hover) }
+
+    .pill{
+      display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+      background:var(--alt); border:1px solid var(--border); font-weight:700; font-size:.85rem;
+    }
+    .pill + .pill{ margin-left:6px }
   </style>
 </head>
 <body>
   <div class="container">
-    <header style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:12px">
+    <div class="header">
       <h1>Notification Settings</h1>
-      <nav class="nav">
-        <a href="{{ url_for('admin.dashboard') }}">Dashboard</a>
-        <a href="{{ url_for('admin.ops') }}">Operations</a>
-        <a href="{{ url_for('admin.titles_page') }}">Titles</a>
-        <a href="{{ url_for('admin.reservations_page') }}">Reservations</a>
-        <a href="{{ url_for('admin.servers_page') }}">Servers</a>
+      <nav class="nav" aria-label="Admin navigation">
+        <div class="nav-links" id="nav-links">
+          <a href="{{ url_for('admin.dashboard') }}">Dashboard</a>
+          <a href="{{ url_for('admin.ops') }}">Operations</a>
+          <a href="{{ url_for('admin.titles_page') }}">Titles</a>
+          <a href="{{ url_for('admin.reservations_page') }}">Reservations</a>
+          <a href="{{ url_for('admin.servers_page') }}">Servers</a>
+          <a href="{{ url_for('admin.logout') }}">Logout</a>
+        </div>
+        <button class="menu-toggle" id="menu-toggle" aria-label="Open navigation menu" aria-expanded="false" aria-controls="nav-links">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+          </svg>
+        </button>
       </nav>
-    </header>
+    </div>
 
-      <div class="card {% if category == 'success' %}success{% endif %}">
-        {{ message|e }}
-      </div>
-      </div>
+    {% for category, message in get_flashed_messages(with_categories=True) %}
+      <div class="flash {{ category|e }}" role="status" aria-live="polite">{{ message|e }}</div>
     {% endfor %}
 
     <section class="card">
-      <form method="POST" action="{{ url_for('admin.notifications') }}" autocomplete="off" novalidate>
+      <h2>Reservation Reminder Rules</h2>
+      <p class="muted">
+        Configure Discord reminders sent <strong>before</strong> a reservation begins. These apply to the titles you list below.
+        (Example: remind 15 minutes before for Architect, General, Governor, Prefect.)
+      </p>
+
+      <form method="POST" action="{{ url_for('admin.notifications') }}" autocomplete="off" novalidate style="margin-top:14px">
+        <!-- If you enable CSRF, include the token here -->
         <div class="checkbox">
-          <input id="enabled" name="enabled" type="checkbox" value="1" style="width:auto;height:auto" {% if enabled in ['1','true','True','yes'] %}checked{% endif %} />
-          <label for="enabled" style="margin:0;font-weight:600">Enable reminders</label>
+          <input id="enabled" name="enabled" type="checkbox" value="1" style="width:auto;height:auto"
+                 {% if enabled in ['1','true','True','yes', True] %}checked{% endif %} />
+          <label for="enabled" style="margin:0; font-weight:600">Enable reminders</label>
         </div>
 
         <div class="row" style="margin-top:16px">
           <div>
             <label for="minutes">Lead time (minutes)</label>
             <input id="minutes" name="minutes" type="number" min="1" max="180" value="{{ minutes|e }}" />
-            <p class="muted">Default is 15 minutes.</p>
+            <p class="muted">Default is <strong>15</strong> minutes.</p>
           </div>
           <div>
             <label for="titles_csv">Titles (comma-separated)</label>
-            <input id="titles_csv" name="titles_csv" type="text" value="{{ titles|e }}" />
-            <p class="muted">e.g. Architect, General, Governor, Prefect</p>
+            <input id="titles_csv" name="titles_csv" type="text" value="{{ titles|e }}" placeholder="Architect, General, Governor, Prefect" />
+            <p class="muted">Only these titles will get reminders.</p>
           </div>
         </div>
 
-        <div style="margin-top:16px">
+        {% if titles_list %}
+          <div style="margin-top:8px">
+            <span class="muted" style="display:block; margin-bottom:6px">Current target titles:</span>
+            {% for t in titles_list %}
+              <span class="pill">{{ t|e }}</span>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <div style="margin-top:18px">
           <button type="submit" class="btn">Save Settings</button>
         </div>
       </form>
     </section>
+
+    <section class="card">
+      <h2>How it Works</h2>
+      <ul class="muted" style="margin:0; padding-left:18px; line-height:1.6">
+        <li>When a matching reservation exists, a reminder is scheduled to post <em>lead time</em> minutes before it starts.</li>
+        <li>Updating these settings updates future scheduling; existing past reminders aren’t re-sent.</li>
+        <li>Reminders respect the server webhook/role configuration in <a href="{{ url_for('admin.servers_page') }}">Servers</a>.</li>
+      </ul>
+    </section>
   </div>
+
+  <script>
+    // Mobile nav toggling (matches other admin pages)
+    document.addEventListener('DOMContentLoaded', function () {
+      const menuToggle = document.getElementById('menu-toggle');
+      const navLinks = document.getElementById('nav-links');
+      if (menuToggle && navLinks) {
+        menuToggle.addEventListener('click', function () {
+          const isExpanded = this.getAttribute('aria-expanded') === 'true';
+          this.setAttribute('aria-expanded', (!isExpanded).toString());
+          navLinks.classList.toggle('is-open');
+        });
+        document.addEventListener('click', function(ev){
+          const inside = navLinks.contains(ev.target) || menuToggle.contains(ev.target);
+          if(!inside && navLinks.classList.contains('is-open')){
+            navLinks.classList.remove('is-open');
+            menuToggle.setAttribute('aria-expanded','false');
+          }
+        });
+      }
+    });
+  </script>
 </body>
 </html>
