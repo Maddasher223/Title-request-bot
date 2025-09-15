@@ -405,11 +405,12 @@ def send_webhook_notification(data, reminder: bool = False, guild_id: int | None
         logger.warning("No webhook configured; skipping notification.")
         return
 
-    shift_hours = _safe_shift_hours()
     role_tag = f"<@&{role_id}>" if role_id else ""
+
     if reminder:
+        lead = get_notify_lead_minutes()
         title = f"Reminder: {data.get('title_name','-')} shift starts soon!"
-        content = f"{role_tag} The {shift_hours}-hour shift for **{data.get('title_name','-')}** by **{data.get('in_game_name','-')}** starts in 5 minutes!"
+        content = f"{role_tag} The shift for **{data.get('title_name','-')}** by **{data.get('in_game_name','-')}** starts in **{lead} minutes**!"
     else:
         title = "New Title Reservation"
         content = f"{role_tag} A new title was reserved via the web form."
@@ -418,8 +419,16 @@ def send_webhook_notification(data, reminder: bool = False, guild_id: int | None
         {"name": "Title", "value": data.get('title_name','-'), "inline": True},
         {"name": "In-Game Name", "value": data.get('in_game_name','-'), "inline": True},
         {"name": "Coordinates", "value": data.get('coordinates','-'), "inline": True},
-        {"name": "Submitted By", "value": data.get('discord_user','Web Form'), "inline": False},
     ]
+
+    # Optional timing fields (shown when provided)
+    if data.get("start_utc"):
+        fields.append({"name": "Start (UTC)", "value": data["start_utc"], "inline": True})
+    if data.get("end_utc"):
+        fields.append({"name": "Ends (UTC)", "value": data["end_utc"], "inline": True})
+
+    fields.append({"name": "Submitted By", "value": data.get('discord_user','Web Form'), "inline": False})
+
     if data.get("manage_url"):
         fields.append({"name": "Manage", "value": f"[Cancel reservation]({data['manage_url']})", "inline": False})
 
@@ -539,6 +548,33 @@ def _release_title_blocking(title_name: str) -> bool:
 
     return True
 
+# -------------------- Notification settings helpers --------------------
+DEFAULT_NOTIFY_TITLES = ["Architect", "General", "Governor", "Prefect"]
+
+def _get_setting_value(key: str, default: str) -> str:
+    try:
+        with ensure_app_context():
+            row = Setting.query.get(key)
+            if row and (row.value is not None):
+                return row.value
+    except Exception:
+        pass
+    return default
+
+def get_notify_enabled() -> bool:
+    return _get_setting_value("notify_enabled", "1") in ("1", "true", "True", "yes")
+
+def get_notify_lead_minutes() -> int:
+    try:
+        return int(_get_setting_value("notify_lead_minutes", "15"))
+    except Exception:
+        return 15
+
+def get_notify_titles() -> list[str]:
+    csv = _get_setting_value("notify_titles", ",".join(DEFAULT_NOTIFY_TITLES))
+    titles = [t.strip() for t in csv.split(",") if t.strip()]
+    return titles or DEFAULT_NOTIFY_TITLES
+
 # -------------------- Discord setup --------------------
 intents = discord.Intents.default()
 intents.members = True
@@ -646,6 +682,9 @@ def _reserve_slot_core(
 
     # --- Notify / Airtable
     try:
+        # Compute end time for the embed (based on current shift hours)
+        end_dt = slot_dt + timedelta(hours=_safe_shift_hours())
+
         send_webhook_notification({
             "title_name": title_name,
             "in_game_name": ign,
@@ -653,18 +692,25 @@ def _reserve_slot_core(
             "timestamp": now_utc().isoformat(),
             "discord_user": who or source,
             "manage_url": manage_url,
+            # New: show start/end in the embed
+            "start_utc": slot_dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M"),
+            "end_utc":   end_dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M"),
         }, reminder=False, guild_id=guild_id)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("Immediate notification failed: %s", e)
 
     try:
         airtable_upsert("reservation", {
-            "Title": title_name, "IGN": ign, "Coordinates": (coords or "-"),
-            "SlotStartUTC": slot_dt, "SlotEndUTC": None,
-            "Source": source, "DiscordUser": who or source,
+            "Title": title_name,
+            "IGN": ign,
+            "Coordinates": (coords or "-"),
+            "SlotStartUTC": slot_dt,
+            "SlotEndUTC": end_dt,
+            "Source": source,
+            "DiscordUser": who or source,
         })
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("Airtable upsert failed: %s", e)
 
 # -------------------- Discord slash commands --------------------
 def is_admin_or_manager():
@@ -764,6 +810,8 @@ async def titles_reserve(
             def __init__(self, title_name: str):
                 super().__init__(timeout=180)
                 self.title_name = title_name
+                self.title_check_loop.start()
+                self.reminder_loop.start()
                 self.ign = discord.ui.TextInput(label="In-Game Name", max_length=64, required=True)
                 self.coords = discord.ui.TextInput(label="Coordinates (X:Y)", required=True, max_length=32, placeholder="e.g. 123:456")
                 self.date = discord.ui.TextInput(label="Date (UTC) YYYY-MM-DD", required=True, placeholder="YYYY-MM-DD")
@@ -881,6 +929,86 @@ class TitleCog(commands.Cog, name="TitleManager"):
     @title_check_loop.before_loop
     async def _wait_ready(self):
         await self.bot.wait_until_ready()
+
+    @tasks.loop(seconds=30)
+    async def reminder_loop(self):
+        # Respect admin settings
+        if not get_notify_enabled():
+            return
+        lead = get_notify_lead_minutes()
+        titles = set(get_notify_titles())
+        now = now_utc()
+        window_start = now
+        window_end = now + timedelta(minutes=lead)
+
+        try:
+            with ensure_app_context():
+                # Find reservations whose slot starts in the next `lead` minutes for the chosen titles
+                rows = (
+                    Reservation.query
+                    .filter(Reservation.title_name.in_(list(titles)))
+                    .filter(Reservation.slot_dt.isnot(None))
+                    .filter(Reservation.slot_dt > window_start)
+                    .filter(Reservation.slot_dt <= window_end)
+                    .order_by(Reservation.slot_dt.asc())
+                    .all()
+                )
+        except Exception as e:
+            logger.error("reminder_loop query failed: %s", e)
+            return
+
+        sent_keys = set()
+        with state_lock:
+            sent_list = state.setdefault('sent_reminders', [])
+            sent_keys = set(sent_list)
+
+        to_send = []
+        for r in rows:
+            key = f"{r.title_name}|{r.slot_dt.isoformat()}"
+            if key in sent_keys:
+                continue
+            to_send.append((r, key))
+
+        if not to_send:
+            return
+
+        for r, key in to_send:
+            try:
+                send_webhook_notification(
+                    {
+                        "title_name": r.title_name,
+                        "in_game_name": r.ign or "-",
+                        "coordinates": r.coords or "-",
+                        "timestamp": now.isoformat(),
+                        "discord_user": "Reminder",
+                    },
+                    reminder=True,
+                    guild_id=None  # uses default/DB-configured guild
+                )
+                with state_lock:
+                    state.setdefault('sent_reminders', []).append(key)
+                    _save_state_unlocked()
+            except Exception as e:
+                logger.error("reminder send failed for %s: %s", key, e)
+
+    @reminder_loop.before_loop
+    async def _wait_ready_reminder(self):
+        await self.bot.wait_until_ready()
+    @reminder_loop.after_loop
+    async def _reminder_stopped(self):
+        logger.warning("Reminder loop has stopped.")    
+    @commands.command(help="Force-release a title (admin only). Usage: !release <title name>")
+    @commands.has_permissions(administrator=True)
+    async def release(self, ctx, *, title_name: str):
+        title_name = title_name.strip()
+        if title_name not in ORDERED_TITLES:
+            return await ctx.send(f"❌ Unknown title: '{title_name}'.")
+        with state_lock:
+            data = state.get('titles', {}).get(title_name, {})
+            if not data.get('holder'):
+                return await ctx.send(f"ℹ️ Title '{title_name}' is already available.")
+        await self.force_release_logic(title_name, f"Released by admin {ctx.author}.")
+        await ctx.send(f"✅ Title '{title_name}' has been released.")
 
     @commands.command(help="List all titles and their current status.")
     async def titles(self, ctx):
@@ -1094,6 +1222,21 @@ def create_app() -> Flask:
         if seeded:
             db.session.commit()
             logger.info("Auto-seeded defaults (titles + shift_hours).")
+
+        # Seed notification settings defaults (idempotent)
+        try:
+            changed = False
+            if db.session.get(Setting, "notify_enabled") is None:
+                db.session.add(Setting(key="notify_enabled", value="1")); changed = True
+            if db.session.get(Setting, "notify_lead_minutes") is None:
+                db.session.add(Setting(key="notify_lead_minutes", value="15")); changed = True
+            if db.session.get(Setting, "notify_titles") is None:
+                db.session.add(Setting(key="notify_titles", value="Architect,General,Governor,Prefect")); changed = True
+            if changed:
+                db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            logger.warning("Seeding notify_* settings skipped: %s", e)
 
         # Backfill slot_dt for any remaining rows
         try:

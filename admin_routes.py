@@ -682,6 +682,48 @@ def register_admin(app, deps: dict):
                 flash("Reservation removed, but live title release failed.", "error")
 
         return redirect(url_for("admin.ops"))
+    
+    # ========== Notifications (admin-configurable) ==========
+    @admin_bp.route("/notifications", methods=["GET", "POST"])
+    @admin_required
+    def notifications():
+        if request.method == "POST":
+            enabled = "1" if request.form.get("enabled") == "1" else "0"
+            minutes = (request.form.get("minutes") or "15").strip()
+            titles_csv = (request.form.get("titles_csv") or "Architect,General,Governor,Prefect").strip()
+            # very light validation
+            try:
+                m = max(1, min(180, int(minutes)))
+                minutes = str(m)
+            except Exception:
+                minutes = "15"
+            try:
+                row = db.session.get(M.Setting, "notify_enabled")
+                if row: row.value = enabled
+                else: db.session.add(M.Setting(key="notify_enabled", value=enabled))
+                row = db.session.get(M.Setting, "notify_lead_minutes")
+                if row: row.value = minutes
+                else: db.session.add(M.Setting(key="notify_lead_minutes", value=minutes))
+                row = db.session.get(M.Setting, "notify_titles")
+                if row: row.value = titles_csv
+                else: db.session.add(M.Setting(key="notify_titles", value=titles_csv))
+                db.session.commit()
+                flash("Notification settings saved.", "success")
+            except Exception as e:
+                db.session.rollback()
+                current_app.logger.exception("notifications save failed: %s", e)
+                flash("Failed to save settings.", "error")
+            return redirect(url_for("admin.notifications"))
 
+        # GET
+        def _get(k, d): 
+            row = db.session.get(M.Setting, k)
+            return (row.value if row and row.value is not None else d)
+        enabled = _get("notify_enabled", "1")
+        minutes = _get("notify_lead_minutes", "15")
+        titles = _get("notify_titles", "Architect,General,Governor,Prefect")
+        return render_template("notifications.html",
+                               enabled=enabled, minutes=minutes, titles=titles)
+    
     # Done — mount blueprint
     app.register_blueprint(admin_bp)
