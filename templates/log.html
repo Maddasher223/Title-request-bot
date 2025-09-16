@@ -2,136 +2,154 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
   <title>Request Log</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
 
-  <!-- Keep existing favicon -->
-  <link rel="icon" type="image/png" href="{{ url_for('static', filename='icons/title-requestor.png') }}">
-
-  <!-- Inter body + Cinzel headings to match the suite -->
+  <!-- Fonts: Caudex (headings) + Inter (body) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Caudex:wght@600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
 
   <style>
-    /* --- Calm Four-Nations inspired palette, toned-down --- */
     :root{
-      --parchment-dark: #181a1f;     /* page bg */
-      --parchment-light:#202225;    /* card bg */
-      --ink-text:#e2e0dd;           /* body text */
-      --ink-muted:#a19a92;          /* muted text */
-      --ink-bright:#ffffff;
-      --stroke:#5a524c;             /* borders */
-      --shadow:0 6px 20px rgba(0,0,0,0.4);
-      --focus:#e8b351;              /* subtle gold accent */
+      /* Match the updated admin palette (blue/teal) */
+      --bg:#0f141a; --card:#111821; --alt:#0c1218; --border:#2a3a49;
+      --text:#e7edf4; --muted:#9cb0c3; --bright:#ffffff;
+      --primary:#3d7ea6; --primary-hover:#336f93; --ring:rgba(61,126,166,.35);
+      --shadow:0 12px 40px rgba(0,0,0,.45);
     }
-
+    *{ box-sizing:border-box }
+    html,body{ margin:0; height:100% }
     body{
-      font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
-      background:var(--parchment-dark);
-      background-image:
-        radial-gradient(circle at 25% -10%, rgba(245,241,232,0.05), transparent 45%),
-        radial-gradient(circle at 100% 120%, rgba(245,241,232,0.04), transparent 55%);
-      color:var(--ink-text);
-      margin:0; padding:1.75rem; line-height:1.6;
+      background:var(--bg);
+      color:var(--text);
+      font:16px/1.55 'Inter',system-ui,sans-serif;
+      padding:24px;
+      overflow-x:hidden;
     }
-
-    .container{ max-width:1200px; margin:0 auto; }
+    .container{ max-width:1200px; margin:0 auto; display:grid; gap:24px }
 
     /* Header */
     .header{
       display:flex; justify-content:space-between; align-items:center;
-      margin-bottom:1.75rem;
+      border-bottom:1px solid var(--border); padding-bottom:12px
     }
-    h1{
-      font-family:'Cinzel', serif; color:var(--ink-bright);
-      font-weight:600; font-size:1.9rem; margin:0;
-      display:flex; align-items:center; gap:.75rem;
-      letter-spacing:.3px;
-    }
-    a{ color:var(--focus); text-decoration:none; font-weight:600; }
-    a:hover{ text-decoration:underline; }
+    h1{ margin:0; font:700 1.8rem 'Caudex',serif; color:var(--bright) }
+    .nav a{ color:var(--primary); text-decoration:none; font-weight:700 }
+    .nav a:hover{ text-decoration:underline }
 
     /* Card + table */
     .card{
-      background:var(--parchment-light);
-      border:1px solid var(--stroke);
-      border-radius:10px;
-      padding:12px 22px 22px;
+      background:var(--card); border:1px solid var(--border);
+      border-radius:12px; padding:24px; border-top:3px solid var(--primary);
       box-shadow:var(--shadow);
     }
-    .table-wrap{ overflow-x:auto; }
+    .muted{ color:var(--muted); font-size:.95rem }
 
-    table{ width:100%; border-collapse:collapse; margin-top:.5rem; table-layout:auto; }
+    .table-wrapper{ overflow-x:auto }
+    table{
+      width:100%; border-collapse:collapse; margin-top:.5rem; table-layout:fixed;
+    }
+    /* Stable column sizing to avoid layout jump */
+    col.col-time{ width:220px }
+    col.col-title{ width:240px }
+    col.col-ign{ width:220px }
+    col.col-coords{ width:160px }
+    col.col-user{ width:auto }
+
     th,td{
-      padding:12px 16px; text-align:left; border-bottom:1px solid var(--stroke);
-      white-space:nowrap; /* keeps rows tidy; wide tables scroll horizontally */
+      padding:12px 14px; border-bottom:1px solid var(--border);
+      text-align:left; vertical-align:middle;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
     }
     th{
-      font-family:'Cinzel', serif;
-      color:var(--ink-muted); font-weight:500; font-size:.9rem;
-      letter-spacing:.05em; border-bottom-width:2px;
-      text-transform:uppercase;
+      color:var(--muted); font:700 .8rem 'Caudex',serif;
+      letter-spacing:.03em; text-transform:uppercase
     }
-    tr:last-child td{ border-bottom:none; }
+    tbody tr:nth-of-type(odd){ background-color:var(--alt) }
+    code{
+      background:var(--alt); padding:3px 6px; border-radius:8px; border:1px solid var(--border)
+    }
 
     /* Empty state */
-    .empty-row td{
-      text-align:center; color:var(--ink-muted); padding:2.5rem 1rem;
-      font-style:italic; white-space:normal;
-    }
+    .empty{ text-align:center; padding:2rem 1rem; color:var(--muted) }
 
-    /* Mobile tweaks */
+    /* Small helper row for context */
+    .subhead{
+      display:flex; justify-content:space-between; align-items:center;
+      gap:12px; flex-wrap:wrap; color:var(--muted)
+    }
+    .pill{
+      display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+      background:rgba(61,126,166,.14); color:var(--text); border:1px solid var(--border);
+      font-weight:600; font-size:.85rem;
+    }
+    .back-link{ display:inline-flex; align-items:center; gap:8px }
+
     @media (max-width: 768px){
-      body{ padding:1rem; }
-      .header{ flex-direction:column; align-items:flex-start; gap:.6rem; margin-bottom:1.25rem; }
-      h1{ font-size:1.55rem; }
-      .card{ padding:8px 16px 16px; }
-      th,td{ padding:10px 12px; font-size:.98rem; }
+      body{ padding:16px }
+      .header{ flex-wrap:wrap; gap:10px }
+      table{ table-layout:auto }
+      th,td{ white-space:normal }
     }
   </style>
 </head>
 <body>
   <div class="container">
-
-    <div class="header">
+    <header class="header">
       <h1>Request Log</h1>
-      <a href="{{ url_for('dashboard') }}">← Back to Dashboard</a>
-    </div>
+      <nav class="nav">
+        <a class="back-link" href="{{ url_for('dashboard') }}">← Back to Dashboard</a>
+      </nav>
+    </header>
 
-    <div class="card">
-      <div class="table-wrap">
-        <table>
+    <section class="card">
+      <div class="subhead">
+        <span class="muted">All title requests submitted via the web form.</span>
+        {% if logs %}
+          <span class="pill">{{ logs|length }} entr{{ 'y' if logs|length == 1 else 'ies' }}</span>
+        {% endif %}
+      </div>
+
+      <div class="table-wrapper">
+        <table aria-label="Request log table">
+          <colgroup>
+            <col class="col-time">
+            <col class="col-title">
+            <col class="col-ign">
+            <col class="col-coords">
+            <col class="col-user">
+          </colgroup>
           <thead>
             <tr>
-              <th>Timestamp</th>
-              <th>Title</th>
-              <th>In-Game Name</th>
-              <th>Coordinates</th>
-              <th>Submitted By</th>
+              <th scope="col">Timestamp (UTC)</th>
+              <th scope="col">Title</th>
+              <th scope="col">In-Game Name</th>
+              <th scope="col">Coordinates</th>
+              <th scope="col">Submitted By</th>
             </tr>
           </thead>
           <tbody>
-            {% if logs %}
+            {% if logs and logs|length %}
               {% for log in logs %}
                 <tr>
-                  <td>{{ log.timestamp }}</td>
-                  <td>{{ log.title_name }}</td>
-                  <td>{{ log.in_game_name }}</td>
-                  <td>{{ log.coordinates }}</td>
-                  <td>{{ log.discord_user }}</td>
+                  <td>{{ (log.timestamp or '')|e }}</td>
+                  <td>{{ (log.title_name or '-')|e }}</td>
+                  <td>{{ (log.in_game_name or '-')|e }}</td>
+                  <td><code>{{ (log.coordinates or '-')|e }}</code></td>
+                  <td>{{ (log.discord_user or 'Web Form')|e }}</td>
                 </tr>
               {% endfor %}
             {% else %}
-              <tr class="empty-row">
-                <td colspan="5">No requests have been logged yet.</td>
+              <tr>
+                <td colspan="5" class="empty">No requests have been logged yet.</td>
               </tr>
             {% endif %}
           </tbody>
         </table>
       </div>
-    </div>
-
+    </section>
   </div>
 </body>
 </html>
