@@ -253,7 +253,7 @@ def register_routes(app, deps):
                     log_data = list(reader)
         except Exception:
             log_data = []
-        return render_template('log.html', logs=reversed(log_data))
+        return render_template('log.html', logs=log_data[::-1])
 
     @app.route("/book-slot", methods=['POST'])
     def book_slot():
