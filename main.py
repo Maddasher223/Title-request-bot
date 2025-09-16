@@ -492,7 +492,7 @@ DEFAULT_NOTIFY_TITLES = ["Architect", "General", "Governor", "Prefect"]
 def _get_setting_value(key: str, default: str) -> str:
     try:
         with ensure_app_context():
-            row = Setting.query.get(key)
+            row = db.session.get(Setting, key)
             if row and (row.value is not None):
                 return row.value
     except Exception:
@@ -665,15 +665,16 @@ def discord_reminder_job():
     """
     try:
         if not get_notify_enabled():
+            logger.debug("reminder: disabled")
             return
         lead = get_notify_lead_minutes()
         titles = set(get_notify_titles())
         if not titles:
+            logger.debug("reminder: empty titles")
             return
 
         now = now_utc()
-        window_start = now
-        window_end = now + timedelta(minutes=lead)
+        window_start, window_end = now, now + timedelta(minutes=lead)
 
         with ensure_app_context():
             rows = (
@@ -685,47 +686,40 @@ def discord_reminder_job():
                 .order_by(Reservation.slot_dt.asc())
                 .all()
             )
+        logger.debug("reminder: %d row(s) in window %s..%s for titles=%s",
+                     len(rows), window_start.isoformat(), window_end.isoformat(), sorted(titles))
 
         with state_lock:
             sent_keys = set(state.setdefault('sent_reminders', []))
-
         to_send = []
         for r in rows:
-            slot_dt = r.slot_dt
-            if slot_dt is None:
-                continue
-            if slot_dt.tzinfo is None:
-                slot_dt = slot_dt.replace(tzinfo=UTC)
-            else:
-                slot_dt = slot_dt.astimezone(UTC)
+            slot_dt = r.slot_dt.replace(tzinfo=UTC) if r.slot_dt.tzinfo is None else r.slot_dt.astimezone(UTC)
             key = f"{r.title_name}|{slot_dt.isoformat()}"
             if key in sent_keys:
                 continue
             to_send.append((r, key, slot_dt))
 
+        logger.debug("reminder: %d unsent row(s) after de-dupe", len(to_send))
         if not to_send:
             return
 
         for r, key, slot_dt in to_send:
-            try:
-                send_webhook_notification(
-                    {
-                        "title_name": r.title_name,
-                        "in_game_name": r.ign or "-",
-                        "coordinates": r.coords or "-",
-                        "timestamp": now.isoformat(),
-                        "discord_user": "Reminder",
-                        "start_utc": slot_dt.strftime("%Y-%m-%d %H:%M"),
-                    },
-                    reminder=True,
-                    guild_id=None
-                )
-                with state_lock:
-                    state['sent_reminders'].append(key)
-                    _save_state_unlocked()
-            except Exception as e:
-                logger.error("reminder send failed for %s: %s", key, e)
-
+            send_webhook_notification(
+                {
+                    "title_name": r.title_name,
+                    "in_game_name": r.ign or "-",
+                    "coordinates": r.coords or "-",
+                    "timestamp": now.isoformat(),
+                    "discord_user": "Reminder",
+                    "start_utc": slot_dt.strftime("%Y-%m-%d %H:%M"),
+                },
+                reminder=True,
+                guild_id=None
+            )
+            with state_lock:
+                state['sent_reminders'].append(key)
+                _save_state_unlocked()
+            logger.info("reminder: sent %s", key)
     except Exception as e:
         logger.error("discord_reminder_job failed: %s", e)
 
