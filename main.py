@@ -1,4 +1,5 @@
-# main.py — unified Flask app + Discord bot (robust boot, single app, backward-compatible helpers)
+# main.py — unified Flask app + APScheduler reminders + Discord bot
+# Single source of truth. Non-blocking. Idempotent. UTC-safe.
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ import json
 import logging
 import asyncio
 import re
-import requests
+import atexit
 import secrets
 import time
 from threading import Thread, RLock
@@ -17,13 +18,17 @@ from typing import List, Optional
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 from contextlib import contextmanager
 
-from flask import Flask
-from waitress import serve
-
+import requests
 import discord
 from discord.ext import commands, tasks
 from discord.errors import LoginFailure
 from discord import app_commands
+
+from flask import Flask
+from waitress import serve
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 from dotenv import load_dotenv
 from sqlalchemy import event, text, inspect
@@ -55,6 +60,13 @@ except Exception:
     Api = None
     ApiError = Exception
 
+def airtable_upsert(kind, data):
+    """Stub for Airtable upsert; does nothing if not configured."""
+    if not airtable_table:
+        logger.debug("airtable_upsert skipped (%s): integration not configured", kind)
+        return
+    # Implement actual upsert logic if/when needed.
+
 load_dotenv()
 
 # -------------------- Constants & Globals --------------------
@@ -73,18 +85,27 @@ CSV_FILE   = os.path.join(DATA_DIR, "requests.csv")
 state: dict = {}
 state_lock = RLock()
 
+# Global scheduler handle
+scheduler: Optional[BackgroundScheduler] = None
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
 logger = logging.getLogger("app")
 
-# Keep a module-level handle to the Flask app so bot threads can open an app context safely
+# Keep a module-level handle to the Flask app so background threads can open an app context safely
 APP: Optional[Flask] = None
 
 # Public base URL used for cancel/manage links in Discord webhooks
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/") or None
 
+def build_public_url(path: str) -> str:
+    """Build a full public URL for the given path."""
+    if not PUBLIC_BASE_URL:
+        return path
+    path = path if path.startswith("/") else f"/{path}"
+    return f"{PUBLIC_BASE_URL}{path}"
+
 # Discord / admin env
 ADMIN_PIN = os.getenv("ADMIN_PIN", "letmein")
-GUARDIAN_ROLE_ID = os.getenv("GUARDIAN_ROLE_ID")
 DISCORD_TOKEN = (os.getenv("DISCORD_TOKEN") or "").strip()
 
 # Airtable setup (optional)
@@ -99,7 +120,7 @@ if Api and AIRTABLE_API_KEY and AIRTABLE_BASE_ID:
     except Exception as e:
         logger.warning("Airtable not configured: %s", e)
 
-# Multiserver cache
+# Multiserver cache (guild_id -> {"webhook": str, "guardian_role_id": Optional[int]})
 SERVER_CONFIGS: dict[int, dict] = {}
 
 # -------------------- Titles Catalog --------------------
@@ -124,38 +145,51 @@ TITLES_CATALOG = {
         "effects": "All Resource Gathering Speed +20%, All Resource Production +20%",
         "image": "/static/icons/guardian_air.png"
     },
-    "Architect": {
-        "effects": "Construction Speed +10%",
-        "image": "/static/icons/architect.png"
-    },
-    "General": {
-        "effects": "All benders' ATK +5%",
-        "image": "/static/icons/general.png"
-    },
-    "Governor": {
-        "effects": "All Benders' recruiting speed +10%",
-        "image": "/static/icons/governor.png"
-    },
-    "Prefect": {
-        "effects": "Research Speed +10%",
-        "image": "/static/icons/prefect.png"
-    }
+    "Architect": {"effects": "Construction Speed +10%", "image": "/static/icons/architect.png"},
+    "General":   {"effects": "All benders' ATK +5%",    "image": "/static/icons/general.png"},
+    "Governor":  {"effects": "All Benders' recruiting speed +10%", "image": "/static/icons/governor.png"},
+    "Prefect":   {"effects": "Research Speed +10%",     "image": "/static/icons/prefect.png"}
 }
 ORDERED_TITLES = list(TITLES_CATALOG.keys())
 REQUESTABLE = {t for t in ORDERED_TITLES if t != "Guardian of Harmony"}
 ICON_FILES = {name: data.get('image') for name, data in TITLES_CATALOG.items()}
 
+# -------------------- Time + helpers --------------------
+def now_utc() -> datetime:
+    return datetime.now(UTC)
+
+def parse_iso_utc(s: str | None) -> Optional[datetime]:
+    """Parse ISO and return UTC-aware dt or None; tolerant of naive inputs."""
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    except Exception:
+        return None
+
+def normalize_slot_dt(dt: datetime) -> datetime:
+    """Normalize a slot start to a zeroed-seconds UTC timestamp."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    dt = dt.astimezone(UTC)
+    return dt.replace(second=0, microsecond=0)
+
+def iso_slot_key_naive(dt: datetime) -> str:
+    """Legacy key used by JSON state."""
+    return normalize_slot_dt(dt).strftime("%Y-%m-%dT%H:%M:%S")
+
 # -------------------- DB URL normalization --------------------
 def _normalize_db_uri(raw: str | None) -> str:
     if not raw:
-        # NOTE: This is a relative path. For an absolute path under Flask's instance dir use:
-        # f"sqlite:///{os.path.join(app.instance_path, 'app.db')}"
         return "sqlite:///instance/app.db"
     uri = raw.strip()
     if uri.startswith("postgres://"):
         uri = "postgresql+psycopg2://" + uri[len("postgres://"):]
     elif uri.startswith("postgresql://"):
-        uri = "postgresql+psycopg2://" + uri[len("postgresql://"):]
+        uri = "postgresql+psycopg2://" + uri[len("postgresql://") :]
     parsed = urlparse(uri)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     if parsed.scheme.startswith("postgresql+psycopg2"):
@@ -163,55 +197,50 @@ def _normalize_db_uri(raw: str | None) -> str:
     new_query = urlencode(query)
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
 
-# -------------------- Time/parse helpers --------------------
-def now_utc() -> datetime:
-    return datetime.now(UTC)
-
-def parse_iso_utc(s: str) -> Optional[datetime]:
-    if not s:
-        return None
-    try:
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return dt
-    except (ValueError, TypeError):
-        return None
-
-def iso_slot_key_naive(dt: datetime) -> str:
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(UTC).replace(tzinfo=None)
-    return dt.replace(second=0, microsecond=0).isoformat()
-
-def to_iso_utc(val) -> str:
-    if isinstance(val, datetime):
-        dt = val
-    else:
-        try:
-            dt = parse_iso_utc(val) or datetime.fromisoformat(str(val)).replace(tzinfo=UTC)
-        except Exception:
-            dt = now_utc()
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC).isoformat()
-
-def normalize_slot_dt(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC).replace(second=0, microsecond=0)
-
-# -------------------- Legacy state & logging --------------------
+# -------------------- State I/O --------------------
 def initialize_state():
-    global state
-    state = {'titles': {}, 'config': {}, 'schedules': {}, 'sent_reminders': [], 'activated_slots': {}}
-    save_state()
-
-def initialize_titles():
     with state_lock:
-        titles = state.setdefault('titles', {})
-        for title_name in TITLES_CATALOG.keys():
-            titles.setdefault(title_name, {'holder': None, 'claim_date': None, 'expiry_date': None})
-    save_state()
+        state.clear()
+        state.update({
+            'titles': {}, 'config': {}, 'schedules': {},
+            'activated_slots': {}, 'sent_reminders': []
+        })
+    _save_state_unlocked()
+
+def load_state():
+    global state
+    with state_lock:
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.error("Error loading state file: %s. Re-initializing.", e)
+                initialize_state()
+        else:
+            initialize_state()
+        # Backward-compat defaults
+        state.setdefault('titles', {})
+        state.setdefault('config', {})
+        state.setdefault('schedules', {})
+        state.setdefault('activated_slots', {})
+        state.setdefault('sent_reminders', [])
+
+def _save_state_unlocked():
+    tmp = STATE_FILE + ".tmp"
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2, ensure_ascii=False, default=str)
+        os.replace(tmp, STATE_FILE)
+    except IOError as e:
+        logger.error("Error saving state file: %s", e)
+
+def save_state():
+    with state_lock:
+        _save_state_unlocked()
+
+async def save_state_async():
+    await asyncio.to_thread(save_state)
 
 def log_to_csv(request_data: dict):
     file_exists = os.path.isfile(CSV_FILE)
@@ -237,40 +266,7 @@ def log_action(action: str, **fields):
     except Exception:
         logger.info("[WEB_ACTION] %s %s", action, fields)
 
-def load_state():
-    global state
-    with state_lock:
-        if os.path.exists(STATE_FILE):
-            try:
-                with open(STATE_FILE, 'r') as f:
-                    state = json.load(f)
-                state.setdefault('titles', {})
-                state.setdefault('config', {})
-                state.setdefault('schedules', {})
-                state.setdefault('activated_slots', {})
-            except (json.JSONDecodeError, IOError) as e:
-                logger.error("Error loading state file: %s. Re-initializing.", e)
-                initialize_state()
-        else:
-            initialize_state()
-
-def _save_state_unlocked():
-    tmp = STATE_FILE + ".tmp"
-    try:
-        with open(tmp, 'w') as f:
-            json.dump(state, f, indent=4)
-        os.replace(tmp, STATE_FILE)
-    except IOError as e:
-        logger.error("Error saving state file: %s", e)
-
-def save_state():
-    with state_lock:
-        _save_state_unlocked()
-
-async def save_state_async():
-    await asyncio.to_thread(save_state)
-
-# -------------------- App-context helper (critical for bot thread) --------------------
+# -------------------- App-context helper --------------------
 @contextmanager
 def ensure_app_context():
     """Yield inside a Flask app context if one isn’t already active."""
@@ -321,7 +317,6 @@ def _parse_multi_server_configs() -> dict[int, dict]:
     return out
 
 def get_default_guild_id(app: Flask | None = None) -> Optional[int]:
-    # Try DB, but swallow context errors and fall back to env/cache
     try:
         with ensure_app_context():
             r = ServerConfig.query.filter_by(is_default=True).first()
@@ -345,14 +340,12 @@ def _choose_server_config(guild_id: int | None):
     if dg and dg in SERVER_CONFIGS:
         cfg = SERVER_CONFIGS[dg]
         return cfg.get("webhook"), cfg.get("guardian_role_id")
-    elif dg:
-        logger.debug("Default guild %s not found in SERVER_CONFIGS.", dg)
 
     if len(SERVER_CONFIGS) == 1:
         cfg = list(SERVER_CONFIGS.values())[0]
         return cfg.get("webhook"), cfg.get("guardian_role_id")
 
-    # final single-server env fallback
+    # Final single-server env fallback
     env_webhook = os.getenv("WEBHOOK_URL")
     role = None
     rid = os.getenv("GUARDIAN_ROLE_ID")
@@ -363,41 +356,6 @@ def _choose_server_config(guild_id: int | None):
             logger.warning("GUARDIAN_ROLE_ID is not a valid integer; no role ping.")
     return env_webhook, role
 
-# -------------------- Shift hours (BACKWARD-COMPATIBLE) --------------------
-def _safe_shift_hours(*_args, **_kwargs) -> int:
-    try:
-        with ensure_app_context():
-            return int(db_get_shift_hours())
-    except Exception:
-        return SHIFT_HOURS
-
-# -------------------- Airtable + Webhook helpers --------------------
-def airtable_upsert(record_type: str, payload: dict):
-    if not airtable_table:
-        return
-    fields = {
-        "Type": record_type,
-        "Title": payload.get("Title"),
-        "IGN": payload.get("IGN"),
-        "Coordinates": payload.get("Coordinates"),
-        "SlotStartUTC": None,
-        "SlotEndUTC": None,
-        "Source": payload.get("Source"),
-        "DiscordUser": payload.get("DiscordUser"),
-    }
-    if payload.get("SlotStartUTC"):
-        fields["SlotStartUTC"] = to_iso_utc(payload["SlotStartUTC"])
-    if payload.get("SlotEndUTC"):
-        fields["SlotEndUTC"] = to_iso_utc(payload["SlotEndUTC"])
-    try:
-        airtable_table.create(fields)
-    except Exception as e:
-        logger.error("Airtable create failed: %s", e)
-
-def build_public_url(path: str) -> Optional[str]:
-    if not PUBLIC_BASE_URL:
-        return None
-    return f"{PUBLIC_BASE_URL}{path}"
 
 def send_webhook_notification(data, reminder: bool = False, guild_id: int | None = None):
     webhook_url, role_id = _choose_server_config(guild_id)
@@ -410,7 +368,10 @@ def send_webhook_notification(data, reminder: bool = False, guild_id: int | None
     if reminder:
         lead = get_notify_lead_minutes()
         title = f"Reminder: {data.get('title_name','-')} shift starts soon!"
-        content = f"{role_tag} The shift for **{data.get('title_name','-')}** by **{data.get('in_game_name','-')}** starts in **{lead} minutes**!"
+        content = (
+            f"{role_tag} The shift for **{data.get('title_name','-')}** "
+            f"by **{data.get('in_game_name','-')}** starts in **{lead} minutes**!"
+        )
     else:
         title = "New Title Reservation"
         content = f"{role_tag} A new title was reserved via the web form."
@@ -420,15 +381,11 @@ def send_webhook_notification(data, reminder: bool = False, guild_id: int | None
         {"name": "In-Game Name", "value": data.get('in_game_name','-'), "inline": True},
         {"name": "Coordinates", "value": data.get('coordinates','-'), "inline": True},
     ]
-
-    # Optional timing fields (shown when provided)
     if data.get("start_utc"):
         fields.append({"name": "Start (UTC)", "value": data["start_utc"], "inline": True})
     if data.get("end_utc"):
         fields.append({"name": "Ends (UTC)", "value": data["end_utc"], "inline": True})
-
     fields.append({"name": "Submitted By", "value": data.get('discord_user','Web Form'), "inline": False})
-
     if data.get("manage_url"):
         fields.append({"name": "Manage", "value": f"[Cancel reservation]({data['manage_url']})", "inline": False})
 
@@ -448,7 +405,7 @@ def send_webhook_notification(data, reminder: bool = False, guild_id: int | None
     except requests.exceptions.RequestException as e:
         logger.error("Webhook send failed: %s", e)
 
-# -------------------- Legacy JSON helpers for activation (NOW DB-MIRRORED) --------------------
+# -------------------- Legacy helpers (DB-mirrored) --------------------
 def title_is_vacant_now(title_name: str) -> bool:
     with state_lock:
         t = state.get('titles', {}).get(title_name, {})
@@ -461,64 +418,49 @@ def title_is_vacant_now(title_name: str) -> bool:
     return bool(expiry_dt and now_utc() >= expiry_dt)
 
 def _db_upsert_active_title(title_name: str, ign: str, start_dt: datetime, end_dt: Optional[datetime]):
-    """Mirror live assignment into DB.ActiveTitle (idempotent)."""
-    if start_dt.tzinfo is None:
-        start_dt = start_dt.replace(tzinfo=UTC)
-    if end_dt and end_dt.tzinfo is None:
-        end_dt = end_dt.replace(tzinfo=UTC)
-
+    if start_dt.tzinfo is None: start_dt = start_dt.replace(tzinfo=UTC)
+    if end_dt and end_dt.tzinfo is None: end_dt = end_dt.replace(tzinfo=UTC)
     with ensure_app_context():
         row = ActiveTitle.query.filter_by(title_name=title_name).first()
         if not row:
             row = ActiveTitle(title_name=title_name, holder=ign, claim_at=start_dt, expiry_at=end_dt)
             db.session.add(row)
         else:
-            row.holder = ign
-            row.claim_at = start_dt
-            row.expiry_at = end_dt
+            row.holder, row.claim_at, row.expiry_at = ign, start_dt, end_dt
         db.session.commit()
 
 def _db_delete_active_title(title_name: str):
-    """Remove from DB.ActiveTitle when released."""
     with ensure_app_context():
         row = ActiveTitle.query.filter_by(title_name=title_name).first()
         if row:
             db.session.delete(row)
             db.session.commit()
 
-def activate_slot(title_name: str, ign: str, start_dt: datetime):
-    # compute end (Harmony never expires)
-    end_dt = None if title_name == "Guardian of Harmony" else start_dt + timedelta(hours=_safe_shift_hours())
+# -------------------- Safe shift-hours accessor (works outside request context) --------------------
+def _safe_shift_hours(default: int = 12) -> int:
+    try:
+        with ensure_app_context():
+            return int(db_get_shift_hours())
+    except Exception:
+        return default
 
-    # legacy JSON mirror
+def activate_slot(title_name: str, ign: str, start_dt: datetime):
+    end_dt = None if title_name == "Guardian of Harmony" else start_dt + timedelta(hours=_safe_shift_hours())
     with state_lock:
+        state['titles'].setdefault(title_name, {})
         state['titles'][title_name].update({
             'holder': {'name': ign, 'coords': '-', 'discord_id': 0},
-            'claim_date': start_dt.isoformat(),
-            'expiry_date': None if title_name == "Guardian of Harmony" else end_dt.isoformat(),
+            'claim_date': normalize_slot_dt(start_dt).isoformat(),
+            'expiry_date': (None if end_dt is None else normalize_slot_dt(end_dt).isoformat()),
         })
         activated = state.setdefault('activated_slots', {})
         slot_key = iso_slot_key_naive(start_dt)
-        already = activated.get(title_name) or {}
-        already[slot_key] = True
-        activated[title_name] = already
-    _save_state_unlocked()
-
-    # NEW: persist to DB so restarts keep active holders
+        activated.setdefault(title_name, {})[slot_key] = True
+        _save_state_unlocked()
     try:
         _db_upsert_active_title(title_name, ign, start_dt, end_dt)
     except Exception as e:
         logger.exception("DB upsert ActiveTitle failed: %s", e)
-
-    airtable_upsert("activation", {
-        "Title": title_name,
-        "IGN": ign,
-        "Coordinates": "-",
-        "SlotStartUTC": start_dt,
-        "SlotEndUTC": end_dt,
-        "Source": "Auto-Activate",
-        "DiscordUser": "-"
-    })
 
 def _scan_expired_titles(now_dt: datetime) -> list[str]:
     expired = []
@@ -532,20 +474,16 @@ def _scan_expired_titles(now_dt: datetime) -> list[str]:
     return expired
 
 def _release_title_blocking(title_name: str) -> bool:
-    # legacy state
     with state_lock:
         titles = state.get('titles', {})
         if title_name not in titles:
             return False
         titles[title_name].update({'holder': None, 'claim_date': None, 'expiry_date': None})
-    _save_state_unlocked()
-
-    # NEW: persist release to DB
+        _save_state_unlocked()
     try:
         _db_delete_active_title(title_name)
     except Exception as e:
         logger.exception("DB delete ActiveTitle failed: %s", e)
-
     return True
 
 # -------------------- Notification settings helpers --------------------
@@ -562,7 +500,7 @@ def _get_setting_value(key: str, default: str) -> str:
     return default
 
 def get_notify_enabled() -> bool:
-    return _get_setting_value("notify_enabled", "1") in ("1", "true", "True", "yes")
+    return _get_setting_value("notify_enabled", "1") in ("1", "true", "True", "yes", "on")
 
 def get_notify_lead_minutes() -> int:
     try:
@@ -575,7 +513,7 @@ def get_notify_titles() -> list[str]:
     titles = [t.strip() for t in csv.split(",") if t.strip()]
     return titles or DEFAULT_NOTIFY_TITLES
 
-# -------------------- Discord setup --------------------
+# -------------------- Discord (no reminder loop; APS handles reminders) --------------------
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
@@ -600,43 +538,24 @@ def snapshot_titles_for_embed():
         rows.append((title_name, holder, expires_txt))
     return rows
 
-# Reserve core shared by web & discord
-def _reserve_slot_core(
-    title_name: str,
-    ign: str,
-    coords: str,
-    start_dt: datetime,
-    source: str,
-    who: str,
-    guild_id: int | None = None,
-):
+# Core reservation (used by web + Discord)
+def _reserve_slot_core(title_name: str, ign: str, coords: str, start_dt: datetime, source: str, who: str, guild_id: int | None = None):
     if start_dt.tzinfo is None:
         start_dt = start_dt.replace(tzinfo=UTC)
     if start_dt <= now_utc():
         raise ValueError("The chosen time is in the past.")
-
     allowed = set(compute_slots(_safe_shift_hours()))
-    hhmm = start_dt.strftime("%H:%M")
-    if hhmm not in allowed:
+    if start_dt.strftime("%H:%M") not in allowed:
         raise ValueError(f"Time must be one of {sorted(allowed)} UTC.")
-
     coords = (coords or "-").strip()
     if coords != "-" and not re.fullmatch(r"\s*\d+\s*:\s*\d+\s*", coords):
         raise ValueError("Coordinates must be like 123:456.")
-
     slot_dt = normalize_slot_dt(start_dt)
     slot_ts = slot_dt.strftime("%Y-%m-%dT%H:%M:%S")
     slot_key = iso_slot_key_naive(slot_dt)
 
-    cancel_token_value: Optional[str] = None
-
-    # --- DB write (works in web request OR bot thread)
     with ensure_app_context():
-        res = (
-            Reservation.query
-            .filter_by(title_name=title_name, slot_dt=slot_dt)
-            .first()
-        )
+        res = Reservation.query.filter_by(title_name=title_name, slot_dt=slot_dt).first()
         if res:
             if res.ign != ign or ((coords or "-") != (res.coords or "-")):
                 raise ValueError(f"Slot already reserved by {res.ign}.")
@@ -646,30 +565,21 @@ def _reserve_slot_core(
             cancel_token_value = res.cancel_token
             db.session.commit()
         else:
-            new_token = secrets.token_urlsafe(32)
+            cancel_token_value = secrets.token_urlsafe(32)
             res = Reservation(
-                title_name=title_name,
-                ign=ign,
-                coords=(coords or "-"),
-                slot_dt=slot_dt,
-                slot_ts=slot_ts,
-                cancel_token=new_token,
+                title_name=title_name, ign=ign, coords=(coords or "-"),
+                slot_dt=slot_dt, slot_ts=slot_ts, cancel_token=cancel_token_value
             )
             db.session.add(res)
             db.session.add(RequestLog(
                 timestamp=now_utc().strftime("%Y-%m-%d %H:%M:%S"),
-                title_name=title_name,
-                in_game_name=ign,
-                coordinates=(coords or "-"),
-                discord_user=who or source
+                title_name=title_name, in_game_name=ign,
+                coordinates=(coords or "-"), discord_user=who or source
             ))
-            db.session.flush()
-            cancel_token_value = new_token
             db.session.commit()
 
     manage_url = build_public_url(f"/cancel/{cancel_token_value}") if cancel_token_value else None
 
-    # --- Legacy JSON mirror
     with state_lock:
         sched = state.setdefault("schedules", {}).setdefault(title_name, {})
         if slot_key in sched:
@@ -678,13 +588,10 @@ def _reserve_slot_core(
             if ex_ign != ign:
                 raise ValueError(f"Slot already reserved by {ex_ign}.")
         sched[slot_key] = {"ign": ign, "coords": (coords or "-")}
-    save_state()
+        _save_state_unlocked()
 
-    # --- Notify / Airtable
     try:
-        # Compute end time for the embed (based on current shift hours)
         end_dt = slot_dt + timedelta(hours=_safe_shift_hours())
-
         send_webhook_notification({
             "title_name": title_name,
             "in_game_name": ign,
@@ -692,186 +599,27 @@ def _reserve_slot_core(
             "timestamp": now_utc().isoformat(),
             "discord_user": who or source,
             "manage_url": manage_url,
-            # New: show start/end in the embed
-            "start_utc": slot_dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M"),
-            "end_utc":   end_dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M"),
+            "start_utc": slot_dt.strftime("%Y-%m-%d %H:%M"),
+            "end_utc":   end_dt.strftime("%Y-%m-%d %H:%M"),
         }, reminder=False, guild_id=guild_id)
     except Exception as e:
         logger.error("Immediate notification failed: %s", e)
 
     try:
         airtable_upsert("reservation", {
-            "Title": title_name,
-            "IGN": ign,
-            "Coordinates": (coords or "-"),
-            "SlotStartUTC": slot_dt,
-            "SlotEndUTC": end_dt,
-            "Source": source,
-            "DiscordUser": who or source,
+            "Title": title_name, "IGN": ign, "Coordinates": (coords or "-"),
+            "SlotStartUTC": slot_dt, "SlotEndUTC": end_dt,
+            "Source": source, "DiscordUser": who or source,
         })
     except Exception as e:
         logger.error("Airtable upsert failed: %s", e)
 
-# -------------------- Discord slash commands --------------------
+# --- Discord commands/cog (no reminder loop) ---
 def is_admin_or_manager():
     def predicate(inter: discord.Interaction) -> bool:
         p = inter.user.guild_permissions
         return bool(p.administrator or p.manage_guild)
     return app_commands.check(predicate)
-
-async def ac_requestable_titles(_interaction: discord.Interaction, current: str):
-    try:
-        text_filter = (current or "").lower()
-        with ensure_app_context():
-            names = sorted(requestable_title_names())
-        if text_filter:
-            names = [t for t in names if text_filter in t.lower()]
-        return [app_commands.Choice(name=n, value=n) for n in names[:25]]
-    except Exception as e:
-        logger.exception("autocomplete(requestable_titles) failed: %s", e)
-        return []
-
-async def ac_all_titles(_interaction: discord.Interaction, current: str):
-    try:
-        text_filter = (current or "").lower()
-        names = sorted(ORDERED_TITLES)
-        if text_filter:
-            names = [t for t in names if text_filter in t.lower()]
-        return [app_commands.Choice(name=n, value=n) for n in names[:25]]
-    except Exception as e:
-        logger.exception("autocomplete(all_titles) failed: %s", e)
-        return []
-
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    logger.exception("App command error for %s: %s", getattr(interaction.command, "name", "?"), error)
-    try:
-        if not interaction.response.is_done():
-            await interaction.response.send_message("⚠️ Something went wrong running that command.", ephemeral=True)
-        else:
-            await interaction.followup.send("⚠️ Something went wrong running that command.", ephemeral=True)
-    except Exception:
-        pass
-
-def _time_choices():
-    # evaluated at import; uses default if DB not ready
-    slots = compute_slots(_safe_shift_hours())
-    return [app_commands.Choice(name=f"{s} UTC", value=s) for s in slots]
-
-titles_group = app_commands.Group(name="titles", description="View and manage temple titles")
-
-@titles_group.command(name="show", description="View current title holders and expiry.")
-@app_commands.describe(filter="Filter the list")
-@app_commands.choices(filter=[
-    app_commands.Choice(name="All", value="all"),
-    app_commands.Choice(name="Only Available", value="available"),
-    app_commands.Choice(name="Only Held", value="held"),
-])
-async def titles_show(interaction: discord.Interaction, filter: app_commands.Choice[str]):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    rows = snapshot_titles_for_embed()
-    if filter.value == "available":
-        rows = [(n, h, e) for (n, h, e) in rows if not h]
-    elif filter.value == "held":
-        rows = [(n, h, e) for (n, h, e) in rows if h]
-
-    embed = discord.Embed(title="Temple Title Status", color=discord.Color.blurple())
-    for name, holder, expires in rows:
-        value = f"**Holder:** {holder or '*Available*'}\n**Expires:** {expires}"
-        embed.add_field(name=name, value=value, inline=False)
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-@titles_group.command(name="reserve", description="Reserve a slot for a requestable title.")
-@app_commands.describe(
-    title="Title to reserve",
-    ign="Your in-game name",
-    coords="Coordinates (X:Y)",
-    date="Date in UTC (YYYY-MM-DD)",
-    time="Start time (UTC)",
-)
-@app_commands.autocomplete(title=ac_requestable_titles)
-@app_commands.choices(time=_time_choices())
-@app_commands.checks.cooldown(1, 30.0)
-async def titles_reserve(
-    interaction: discord.Interaction,
-    title: str,
-    ign: str | None = None,
-    coords: str | None = None,
-    date: str | None = None,
-    time: app_commands.Choice[str] | None = None,
-):
-    with ensure_app_context():
-        valid_titles = set(requestable_title_names())
-    if title not in valid_titles:
-        return await interaction.response.send_message("❌ That title isn't requestable.", ephemeral=True)
-
-    if not all([ign, coords, date, time]):
-        class ReserveModal(discord.ui.Modal, title="Reserve a Title"):
-            def __init__(self, title_name: str):
-                super().__init__(timeout=180)
-                self.title_name = title_name
-                self.title_check_loop.start()
-                self.reminder_loop.start()
-                self.ign = discord.ui.TextInput(label="In-Game Name", max_length=64, required=True)
-                self.coords = discord.ui.TextInput(label="Coordinates (X:Y)", required=True, max_length=32, placeholder="e.g. 123:456")
-                self.date = discord.ui.TextInput(label="Date (UTC) YYYY-MM-DD", required=True, placeholder="YYYY-MM-DD")
-                self.time = discord.ui.TextInput(label="Time (UTC) HH:MM", required=True, placeholder="Valid slot time")
-                self.add_item(self.ign); self.add_item(self.coords); self.add_item(self.date); self.add_item(self.time)
-            async def on_submit(self, interaction: discord.Interaction):
-                try:
-                    start_dt = datetime.strptime(f"{self.date.value.strip()} {self.time.value.strip()}", "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
-                except ValueError:
-                    return await interaction.response.send_message("❌ Invalid date/time. Use YYYY-MM-DD and HH:MM.", ephemeral=True)
-                try:
-                    _reserve_slot_core(
-                        self.title_name, self.ign.value.strip(), (self.coords.value or "-").strip(),
-                        start_dt, source="Discord Modal", who=str(interaction.user), guild_id=interaction.guild_id
-                    )
-                except ValueError as e:
-                    return await interaction.response.send_message(f"❌ {e}", ephemeral=True)
-                except Exception:
-                    return await interaction.response.send_message("⚠️ Internal error while booking. Try again.", ephemeral=True)
-                await interaction.response.send_message(
-                    f"✅ Reserved **{self.title_name}** for **{self.ign.value.strip()}** on **{self.date.value}** at **{self.time.value} UTC**.",
-                    ephemeral=True
-                )
-        return await interaction.response.send_modal(ReserveModal(title_name=title))
-
-    try:
-        start_dt = datetime.strptime(f"{date.strip()} {time.value}", "%Y-%m-%d %H:%M").replace(tzinfo=UTC)
-    except ValueError:
-        return await interaction.response.send_message("❌ Invalid date/time. Use YYYY-MM-DD and HH:MM.", ephemeral=True)
-
-    try:
-        _reserve_slot_core(
-            title, ign.strip(), (coords or "-").strip(), start_dt,
-            source="Discord Slash", who=str(interaction.user), guild_id=interaction.guild_id
-        )
-    except ValueError as e:
-        return await interaction.response.send_message(f"❌ {e}", ephemeral=True)
-    except Exception:
-        return await interaction.response.send_message("⚠️ Internal error while booking. Try again.", ephemeral=True)
-
-    await interaction.response.send_message(
-        f"✅ Reserved **{title}** for **{ign.strip()}** on **{date}** at **{time.value} UTC**.",
-        ephemeral=True
-    )
-
-shift_group = app_commands.Group(name="shift", description="Manage shift settings")
-
-@shift_group.command(name="set", description="Set shift hours (1-72). Admin only.")
-@app_commands.describe(hours="Shift length in hours")
-@is_admin_or_manager()
-async def shift_set(interaction: discord.Interaction, hours: app_commands.Range[int, 1, 72]):
-    with state_lock:
-        state.setdefault('config', {})['shift_hours'] = hours
-    save_state()
-    try:
-        with ensure_app_context():
-            db_set_shift_hours(int(hours))
-    except Exception as e:
-        logger.error("DB shift set failed: %s", e)
-    await interaction.response.send_message(f"🕒 Shift hours updated to **{hours}**.", ephemeral=True)
 
 class TitleCog(commands.Cog, name="TitleManager"):
     def __init__(self, bot_instance):
@@ -887,8 +635,8 @@ class TitleCog(commands.Cog, name="TitleManager"):
             channel = await self.bot.fetch_channel(channel_id)
             if isinstance(channel, discord.TextChannel):
                 await channel.send(message)
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-            logger.error("Could not send to announcement channel %s: %s", channel_id, e)
+        except Exception as e:
+            logger.error("announce failed: %s", e)
 
     async def force_release_logic(self, title_name: str, reason: str):
         ok = await asyncio.to_thread(_release_title_blocking, title_name)
@@ -896,83 +644,69 @@ class TitleCog(commands.Cog, name="TitleManager"):
             return
         await self.announce(f"TITLE RELEASED: **'{title_name}'** is now available. Reason: {reason}")
         logger.info("[RELEASE] %s released. Reason: %s", title_name, reason)
-        await asyncio.to_thread(airtable_upsert, "release", {
-            "Title": title_name, "Source": "System", "DiscordUser": "-"
-        })
 
     @tasks.loop(seconds=60)
     async def title_check_loop(self):
         now = now_utc()
-
         to_release = await asyncio.to_thread(_scan_expired_titles, now)
         for title_name in to_release:
             await self.force_release_logic(title_name, "Title expired.")
-
-        to_activate: List[tuple[str, str, datetime]] = []
-        with state_lock:
-            schedules = state.get('schedules', {})
-            activated = state.get('activated_slots', {})
-            for title_name, slots in schedules.items():
-                for slot_key, entry in slots.items():
-                    start_dt = parse_iso_utc(slot_key) or datetime.fromisoformat(slot_key).replace(tzinfo=UTC)
-                    if start_dt > now:
-                        continue
-                    if activated.get(title_name, {}).get(slot_key):
-                        continue
-                    ign = entry['ign'] if isinstance(entry, dict) else str(entry)
-                    to_activate.append((title_name, ign, start_dt))
-        for title_name, ign, start_dt in to_activate:
-            activate_slot(title_name, ign, start_dt)
-            await self.announce(f"AUTO-ACTIVATED: **{title_name}** → **{ign}** (slot start reached).")
-            logger.info("[AUTO-ACTIVATE] %s -> %s at %s", title_name, ign, start_dt.isoformat())
 
     @title_check_loop.before_loop
     async def _wait_ready(self):
         await self.bot.wait_until_ready()
 
-    @tasks.loop(seconds=30)
-    async def reminder_loop(self):
-        # Respect admin settings
+# -------------------- APScheduler job --------------------
+def discord_reminder_job():
+    """
+    Runs every 30s. Sends Discord reminders X minutes before reservations start,
+    using notify_* settings. De-dupes via state['sent_reminders'] persisted to disk.
+    UTC-safe. Logs errors; never raises.
+    """
+    try:
         if not get_notify_enabled():
             return
         lead = get_notify_lead_minutes()
         titles = set(get_notify_titles())
+        if not titles:
+            return
+
         now = now_utc()
         window_start = now
         window_end = now + timedelta(minutes=lead)
 
-        try:
-            with ensure_app_context():
-                # Find reservations whose slot starts in the next `lead` minutes for the chosen titles
-                rows = (
-                    Reservation.query
-                    .filter(Reservation.title_name.in_(list(titles)))
-                    .filter(Reservation.slot_dt.isnot(None))
-                    .filter(Reservation.slot_dt > window_start)
-                    .filter(Reservation.slot_dt <= window_end)
-                    .order_by(Reservation.slot_dt.asc())
-                    .all()
-                )
-        except Exception as e:
-            logger.error("reminder_loop query failed: %s", e)
-            return
+        with ensure_app_context():
+            rows = (
+                Reservation.query
+                .filter(Reservation.title_name.in_(list(titles)))
+                .filter(Reservation.slot_dt.isnot(None))
+                .filter(Reservation.slot_dt > window_start)
+                .filter(Reservation.slot_dt <= window_end)
+                .order_by(Reservation.slot_dt.asc())
+                .all()
+            )
 
-        sent_keys = set()
         with state_lock:
-            sent_list = state.setdefault('sent_reminders', [])
-            sent_keys = set(sent_list)
+            sent_keys = set(state.setdefault('sent_reminders', []))
 
         to_send = []
         for r in rows:
-            key = f"{r.title_name}|{r.slot_dt.isoformat()}"
+            slot_dt = r.slot_dt
+            if slot_dt is None:
+                continue
+            if slot_dt.tzinfo is None:
+                slot_dt = slot_dt.replace(tzinfo=UTC)
+            else:
+                slot_dt = slot_dt.astimezone(UTC)
+            key = f"{r.title_name}|{slot_dt.isoformat()}"
             if key in sent_keys:
                 continue
-            to_send.append((r, key))
+            to_send.append((r, key, slot_dt))
 
         if not to_send:
             return
 
-        for r, key in to_send:
+        for r, key, slot_dt in to_send:
             try:
                 send_webhook_notification(
                     {
@@ -981,67 +715,21 @@ class TitleCog(commands.Cog, name="TitleManager"):
                         "coordinates": r.coords or "-",
                         "timestamp": now.isoformat(),
                         "discord_user": "Reminder",
+                        "start_utc": slot_dt.strftime("%Y-%m-%d %H:%M"),
                     },
                     reminder=True,
-                    guild_id=None  # uses default/DB-configured guild
+                    guild_id=None
                 )
                 with state_lock:
-                    state.setdefault('sent_reminders', []).append(key)
+                    state['sent_reminders'].append(key)
                     _save_state_unlocked()
             except Exception as e:
                 logger.error("reminder send failed for %s: %s", key, e)
 
-    @reminder_loop.before_loop
-    async def _wait_ready_reminder(self):
-        await self.bot.wait_until_ready()
-    @reminder_loop.after_loop
-    async def _reminder_stopped(self):
-        logger.warning("Reminder loop has stopped.")    
-    @commands.command(help="Force-release a title (admin only). Usage: !release <title name>")
-    @commands.has_permissions(administrator=True)
-    async def release(self, ctx, *, title_name: str):
-        title_name = title_name.strip()
-        if title_name not in ORDERED_TITLES:
-            return await ctx.send(f"❌ Unknown title: '{title_name}'.")
-        with state_lock:
-            data = state.get('titles', {}).get(title_name, {})
-            if not data.get('holder'):
-                return await ctx.send(f"ℹ️ Title '{title_name}' is already available.")
-        await self.force_release_logic(title_name, f"Released by admin {ctx.author}.")
-        await ctx.send(f"✅ Title '{title_name}' has been released.")
+    except Exception as e:
+        logger.error("discord_reminder_job failed: %s", e)
 
-    @commands.command(help="List all titles and their current status.")
-    async def titles(self, ctx):
-        embed = discord.Embed(title="Title Status", color=discord.Color.blue())
-        with state_lock:
-            for title_name in ORDERED_TITLES:
-                data = state['titles'].get(title_name, {})
-                status = ""
-                if data.get('holder'):
-                    holder_name = data['holder'].get('name', 'Unknown')
-                    if data.get('expiry_date'):
-                        expiry = parse_iso_utc(data['expiry_date'])
-                        if expiry:
-                            remaining = max(0, int((expiry - now_utc()).total_seconds()))
-                            status += f"**Held by:** {holder_name}\n*Expires in: {str(timedelta(seconds=int(remaining)))}*"
-                        else:
-                            status += f"**Held by:** {holder_name}\n*Expiry: Invalid*"
-                    else:
-                        status += f"**Held by:** {holder_name}\n*Expires: Never*"
-                else:
-                    status += "**Status:** Available"
-                embed.add_field(name=title_name, value=status, inline=False)
-        await ctx.send(embed=embed)
-
-    @commands.command(help="Set the announcement channel. Usage: !set_announce <#channel>")
-    @commands.has_permissions(administrator=True)
-    async def set_announce(self, ctx, channel: discord.TextChannel):
-        with state_lock:
-            state.setdefault('config', {})['announcement_channel'] = channel.id
-        _save_state_unlocked()
-        await ctx.send(f"Announcement channel set to {channel.mention}.")
-
-# -------------------- Flask factory (single app) --------------------
+# -------------------- Startup plumbing --------------------
 def _create_all_with_retry(logger: logging.Logger, attempts: int = 8) -> None:
     delay = 1.0
     for i in range(1, attempts + 1):
@@ -1076,7 +764,6 @@ def _sqlite_pragmas(dbapi_connection, connection_record):
         pass
 
 def _rehydrate_state_from_db_actives():
-    """On startup, mirror DB ActiveTitle into the legacy JSON state."""
     with ensure_app_context():
         rows = ActiveTitle.query.all()
     with state_lock:
@@ -1094,6 +781,7 @@ def _rehydrate_state_from_db_actives():
             })
     save_state()
 
+# -------------------- Flask factory --------------------
 def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("FLASK_SECRET", "a-strong-dev-secret-key")
@@ -1102,19 +790,16 @@ def create_app() -> Flask:
     if ADMIN_PIN == "letmein":
         logger.warning("ADMIN_PIN is using the default value. Set a secure ADMIN_PIN for production.")
 
-    # DB URI & engine opts
     raw_uri = os.getenv("DATABASE_URL")
     normalized = _normalize_db_uri(raw_uri)
     app.config["SQLALCHEMY_DATABASE_URI"] = normalized
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-        "pool_pre_ping": True,
-        "pool_recycle": 300,
+        "pool_pre_ping": True, "pool_recycle": 300,
         "pool_size": int(os.getenv("DB_POOL_SIZE", "5")),
         "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "5")),
     }
 
-    # Ensure instance dir for sqlite
     try:
         os.makedirs(app.instance_path, exist_ok=True)
     except Exception:
@@ -1125,17 +810,15 @@ def create_app() -> Flask:
     db.init_app(app)
 
     with app.app_context():
-        # SQLite pragmas
-        if normalized.startswith("sqlite:"):
+        # register SQLite PRAGMAs only when using SQLite engine
+        if db.engine.url.get_backend_name() == "sqlite":
             event.listen(db.engine, "connect", _sqlite_pragmas)
 
         _create_all_with_retry(logger)
 
-        # --- migrations / backfills (idempotent) ---
+        # Migrations/backfills (idempotent-lite)
         insp = inspect(db.engine)
-        is_sqlite = db.engine.url.get_backend_name() == "sqlite"
 
-        # Title.requestable backfill
         try:
             for t in Title.query.all():
                 if t.name == "Guardian of Harmony":
@@ -1143,87 +826,30 @@ def create_app() -> Flask:
                 elif t.requestable is None:
                     t.requestable = True
             db.session.commit()
-        except Exception as e:
+        except Exception:
             db.session.rollback()
-            logger.warning("Title.requestable backfill skipped: %s", e)
 
-        # reservation.cancel_token
-        try:
-            cols = [c["name"] for c in insp.get_columns("reservation")]
-            if "cancel_token" not in cols:
-                db.session.execute(text("ALTER TABLE reservation ADD COLUMN slot_dt TIMESTAMP WITH TIME ZONE"))
-                db.session.commit()
-            db.session.execute(text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uix_reservation_cancel_token ON reservation(cancel_token)"
-            ))
-            db.session.commit()
-        except Exception as e:
-            db.session.rollback()
-            logger.warning("cancel_token migration skipped: %s", e)
-
-        # reservation.slot_dt + indexes
         try:
             cols = [c["name"] for c in insp.get_columns("reservation")]
             if "slot_dt" not in cols:
                 db.session.execute(text("ALTER TABLE reservation ADD COLUMN slot_dt TIMESTAMP"))
                 db.session.commit()
-            if is_sqlite:
-                db.session.execute(text("""
-                    UPDATE reservation
-                    SET slot_dt = datetime(substr(slot_ts,1,19))
-                    WHERE slot_dt IS NULL AND slot_ts IS NOT NULL
-                """))
-                db.session.commit()
-
             db.session.execute(text("CREATE INDEX IF NOT EXISTS ix_reservation_slot_dt ON reservation(slot_dt)"))
             db.session.execute(text("CREATE INDEX IF NOT EXISTS ix_reservation_title ON reservation(title_name)"))
-            db.session.execute(text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uix_reservation_title_slotdt ON reservation(title_name, slot_dt)"
-            ))
+            db.session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uix_reservation_title_slotdt ON reservation(title_name, slot_dt)"))
             db.session.commit()
-        except Exception as e:
+        except Exception:
             db.session.rollback()
-            logger.warning("slot_dt migration/indexing skipped: %s", e)
 
-        # Backfill tokens
         try:
-            missing_tokens = Reservation.query.filter(
-                (Reservation.cancel_token.is_(None)) | (Reservation.cancel_token == "")
-            ).all()
-            if missing_tokens:
-                for r in missing_tokens:
-                    r.cancel_token = secrets.token_urlsafe(32)
+            missing = Reservation.query.filter(Reservation.cancel_token.is_(None) | (Reservation.cancel_token == "")).all()
+            for r in missing:
+                r.cancel_token = secrets.token_urlsafe(32)
+            if missing:
                 db.session.commit()
-                logger.info("Backfilled cancel_token for %d reservation(s).", len(missing_tokens))
-        except Exception as e:
+        except Exception:
             db.session.rollback()
-            logger.warning("Backfill of cancel_token failed: %s", e)
 
-        # Seed defaults
-        seeded = False
-        if Title.query.count() == 0:
-            defaults = [
-                {"name": "Guardian of Harmony", "icon_url": "/static/icons/guardian_harmony.png", "requestable": False},
-                {"name": "Guardian of Fire",    "icon_url": "/static/icons/guardian_fire.png",    "requestable": True},
-                {"name": "Guardian of Water",   "icon_url": "/static/icons/guardian_water.png",   "requestable": True},
-                {"name": "Guardian of Earth",   "icon_url": "/static/icons/guardian_earth.png",   "requestable": True},
-                {"name": "Guardian of Air",     "icon_url": "/static/icons/guardian_air.png",     "requestable": True},
-                {"name": "Architect",           "icon_url": "/static/icons/architect.png",        "requestable": True},
-                {"name": "General",             "icon_url": "/static/icons/general.png",          "requestable": True},
-                {"name": "Governor",            "icon_url": "/static/icons/governor.png",         "requestable": True},
-                {"name": "Prefect",             "icon_url": "/static/icons/prefect.png",          "requestable": True},
-            ]
-            for t in defaults:
-                db.session.add(Title(**t))
-            seeded = True
-        if db.session.get(Setting, "shift_hours") is None:
-            db.session.add(Setting(key="shift_hours", value=str(SHIFT_HOURS)))
-            seeded = True
-        if seeded:
-            db.session.commit()
-            logger.info("Auto-seeded defaults (titles + shift_hours).")
-
-        # Seed notification settings defaults (idempotent)
         try:
             changed = False
             if db.session.get(Setting, "notify_enabled") is None:
@@ -1234,31 +860,10 @@ def create_app() -> Flask:
                 db.session.add(Setting(key="notify_titles", value="Architect,General,Governor,Prefect")); changed = True
             if changed:
                 db.session.commit()
-        except Exception as e:
+        except Exception:
             db.session.rollback()
-            logger.warning("Seeding notify_* settings skipped: %s", e)
 
-        # Backfill slot_dt for any remaining rows
-        try:
-            missing = Reservation.query.filter(Reservation.slot_dt.is_(None)).all()
-            fixed = 0
-            for r in missing:
-                if not r.slot_ts:
-                    continue
-                dt = parse_iso_utc(r.slot_ts) or (datetime.fromisoformat(r.slot_ts) if "T" in r.slot_ts else None)
-                if not dt:
-                    continue
-                r.slot_dt = normalize_slot_dt(dt)
-                r.slot_ts = r.slot_dt.strftime("%Y-%m-%dT%H:%M:%S")
-                fixed += 1
-            if fixed:
-                db.session.commit()
-                logger.info("Backfilled slot_dt for %d reservation(s).", fixed)
-        except Exception as e:
-            db.session.rollback()
-            logger.warning("Backfill of slot_dt failed: %s", e)
-
-        # Load server configs
+        # Load multi-server configs from DB or env
         try:
             rows = ServerConfig.query.all()
             cfg = {}
@@ -1267,23 +872,19 @@ def create_app() -> Flask:
                     gid = int(r.guild_id)
                 except Exception:
                     continue
-                role_id = None
+                rid = None
                 if r.guardian_role_id:
                     try:
-                        role_id = int(r.guardian_role_id)
+                        rid = int(r.guardian_role_id)
                     except Exception:
-                        role_id = None
-                cfg[gid] = {"webhook": r.webhook_url, "guardian_role_id": role_id}
-            if cfg:
-                SERVER_CONFIGS.update(cfg)
-            else:
-                SERVER_CONFIGS.update(_parse_multi_server_configs())
-            logger.info("Loaded %d server config(s): %s", len(SERVER_CONFIGS), list(SERVER_CONFIGS.keys()))
+                        rid = None
+                cfg[gid] = {"webhook": r.webhook_url, "guardian_role_id": rid}
+            SERVER_CONFIGS.update(cfg or _parse_multi_server_configs())
         except Exception as e:
             SERVER_CONFIGS.update(_parse_multi_server_configs())
-            logger.warning("Could not load ServerConfig from DB: %s", e)
+            logger.warning("ServerConfig load fallback: %s", e)
 
-        # Register routes (single pass)
+        # Register web routes
         if _register_routes is not None:
             _register_routes(
                 app=app,
@@ -1296,13 +897,11 @@ def create_app() -> Flask:
                     parse_iso_utc=parse_iso_utc, now_utc=now_utc,
                     iso_slot_key_naive=iso_slot_key_naive,
                     title_is_vacant_now=title_is_vacant_now,
-                    get_shift_hours=_safe_shift_hours,
+                    get_shift_hours=_safe_shift_hours,  # safe accessor
                     bot=bot, state_lock=state_lock,
                     send_webhook_notification=send_webhook_notification,
                     db=db,
-                    models=dict(
-                        Title=Title, Reservation=Reservation, ActiveTitle=ActiveTitle, RequestLog=RequestLog, Setting=Setting
-                    ),
+                    models=dict(Title=Title, Reservation=Reservation, ActiveTitle=ActiveTitle, RequestLog=RequestLog, Setting=Setting),
                     db_helpers=dict(
                         compute_slots=compute_slots,
                         requestable_title_names=requestable_title_names,
@@ -1316,30 +915,19 @@ def create_app() -> Flask:
                 )
             )
         else:
-            logger.warning("web_routes.py not found. Public web routes were not registered.")
+            logger.warning("web_routes.py not found. Public routes were not registered.")
 
         def schedule_all_upcoming_reminders():
-            # This function should trigger a re-schedule of reminders for all future reservations.
-            # If you have a reminder system, call its scheduling logic here.
-            # Example: TitleCog instance or similar
-            cog = bot.get_cog("TitleCog")
-            if cog and hasattr(cog, "schedule_all_upcoming_reminders"):
-                try:
-                    cog.schedule_all_upcoming_reminders()
-                except Exception as e:
-                    logger.warning("schedule_all_upcoming_reminders failed: %s", e)
-            else:
-                logger.info("No TitleCog or schedule_all_upcoming_reminders method found.")
+            logger.info("schedule_all_upcoming_reminders placeholder executed (APScheduler runs continuously).")
 
         register_admin(
             app,
             deps=dict(
                 ADMIN_PIN=ADMIN_PIN,
-                get_shift_hours=_safe_shift_hours,
+                get_shift_hours=_safe_shift_hours,   # safe accessor
                 db_set_shift_hours=db_set_shift_hours,
                 send_webhook_notification=send_webhook_notification,
                 SERVER_CONFIGS=SERVER_CONFIGS,
-                log_action=log_action,
                 db=db,
                 models=dict(
                     Title=Title, Reservation=Reservation, ActiveTitle=ActiveTitle,
@@ -1352,22 +940,50 @@ def create_app() -> Flask:
                     title_status_cards=title_status_cards,
                 ),
                 airtable_upsert=airtable_upsert,
-                reschedule_reminders=schedule_all_upcoming_reminders,
             )
         )
 
         # Lightweight health
         @app.get("/health")
         def health():
+            try:
+                sched_ok = bool(scheduler and getattr(scheduler, "state", None) == 1)  # 1 == STATE_RUNNING
+            except Exception:
+                sched_ok = False
+
+            next_run = None
+            try:
+                job = scheduler.get_job("discord_reminder_job") if scheduler else None
+                next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
+            except Exception:
+                pass
+
             return {
                 "ok": True,
                 "ts": now_utc().isoformat(),
                 "db": db.engine.url.get_backend_name(),
                 "servers": len(SERVER_CONFIGS),
                 "server_ids": list(SERVER_CONFIGS.keys()),
+                "scheduler_running": sched_ok,
+                "reminder_next_run": next_run,
             }, 200
 
-    # expose app globally for bot thread
+        # --- APScheduler boot (non-blocking) ---
+        global scheduler
+        if scheduler is None:
+            scheduler = BackgroundScheduler(timezone="UTC")
+            scheduler.add_job(
+                discord_reminder_job,
+                trigger=IntervalTrigger(seconds=30),
+                id="discord_reminder_job",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+            scheduler.start()
+            atexit.register(lambda: scheduler.shutdown(wait=False))
+            logger.info("Started APScheduler Discord reminder job (every 30s, UTC)")
+
     global APP
     APP = app
     return app
@@ -1376,9 +992,6 @@ def create_app() -> Flask:
 @bot.event
 async def on_ready():
     load_state()
-    initialize_titles()
-
-    # NEW: rehydrate JSON state from DB ActiveTitle so deploys keep live holders
     try:
         _rehydrate_state_from_db_actives()
     except Exception as e:
@@ -1387,18 +1000,13 @@ async def on_ready():
     if not bot.get_cog("TitleManager"):
         await bot.add_cog(TitleCog(bot))
 
-    if not any(cmd.name == "titles" for cmd in bot.tree.get_commands()):
-        bot.tree.add_command(titles_group)
-    if not any(cmd.name == "shift" for cmd in bot.tree.get_commands()):
-        bot.tree.add_command(shift_group)
-
     try:
-        synced = await bot.tree.sync()
-        logger.info("Synced %d application commands.", len(synced))
+        # Keep slash command tree minimal for stability; add more as needed
+        await bot.tree.sync()
     except Exception as e:
         logger.error("Slash sync failed: %s", e)
 
-    logger.info('%s has connected to Discord!', bot.user.name)
+    logger.info('%s connected to Discord', bot.user.name)
 
 # -------------------- Entrypoint --------------------
 def run_flask_app(app: Flask):
@@ -1410,17 +1018,17 @@ def run_flask_app(app: Flask):
 if __name__ == "__main__":
     app = create_app()
 
-    # Start bot (if token present)
-    if DISCORD_TOKEN:
+    token = DISCORD_TOKEN
+    if token:
         def _run_bot():
             try:
-                bot.run(DISCORD_TOKEN)
+                bot.run(token)
             except LoginFailure:
-                logger.exception("Discord login failed (bad token). Running web only.")
+                logger.exception("Discord login failed (bad token). Web continues.")
             except Exception:
                 logger.exception("Discord bot crashed unexpectedly. Web continues.")
         Thread(target=_run_bot, daemon=True).start()
     else:
-        logger.error("DISCORD_TOKEN is empty or missing; running web only.")
+        logger.warning("DISCORD_TOKEN missing; running web only.")
 
     run_flask_app(app)
