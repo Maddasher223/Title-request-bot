@@ -687,6 +687,17 @@ def register_admin(app, deps: dict):
     @admin_bp.route("/notifications", methods=["GET", "POST"])
     @admin_required
     def notifications():
+        def _norm_titles_csv(csv_text: str) -> str:
+            # normalize spacing, drop empties, keep order but dedupe
+            seen = set()
+            out = []
+            for part in (csv_text or "").split(","):
+                t = part.strip()
+                if t and t not in seen:
+                    seen.add(t)
+                    out.append(t)
+            return ", ".join(out)
+    
         if request.method == "POST":
             enabled = "1" if request.form.get("enabled") == "1" else "0"
             minutes = (request.form.get("minutes") or "15").strip()
@@ -722,8 +733,15 @@ def register_admin(app, deps: dict):
         enabled = _get("notify_enabled", "1")
         minutes = _get("notify_lead_minutes", "15")
         titles = _get("notify_titles", "Architect,General,Governor,Prefect")
-        return render_template("notifications.html",
-                               enabled=enabled, minutes=minutes, titles=titles)
+        titles_list = [t.strip() for t in titles.split(",") if t.strip()]
+
+        return render_template(
+            "notifications.html",
+            enabled=enabled,
+            minutes=minutes,
+            titles=titles,
+            titles_list=titles_list,   # <-- used by the template to render pills
+        )
     
     # Done — mount blueprint
     app.register_blueprint(admin_bp)

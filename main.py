@@ -1318,6 +1318,19 @@ def create_app() -> Flask:
         else:
             logger.warning("web_routes.py not found. Public web routes were not registered.")
 
+        def schedule_all_upcoming_reminders():
+            # This function should trigger a re-schedule of reminders for all future reservations.
+            # If you have a reminder system, call its scheduling logic here.
+            # Example: TitleCog instance or similar
+            cog = bot.get_cog("TitleCog")
+            if cog and hasattr(cog, "schedule_all_upcoming_reminders"):
+                try:
+                    cog.schedule_all_upcoming_reminders()
+                except Exception as e:
+                    logger.warning("schedule_all_upcoming_reminders failed: %s", e)
+            else:
+                logger.info("No TitleCog or schedule_all_upcoming_reminders method found.")
+
         register_admin(
             app,
             deps=dict(
@@ -1339,6 +1352,7 @@ def create_app() -> Flask:
                     title_status_cards=title_status_cards,
                 ),
                 airtable_upsert=airtable_upsert,
+                reschedule_reminders=schedule_all_upcoming_reminders,
             )
         )
 
